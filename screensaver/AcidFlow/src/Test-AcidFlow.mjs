@@ -44,18 +44,19 @@ await send('Runtime.enable'); await send('Log.enable'); await send('Page.enable'
 await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 720, deviceScaleFactor: 1, mobile: false });
 for (let i = 0; i < 60; i++) { if (await evalJs('!!window.__acid')) break; await sleep(500); }
 const errShown = await evalJs("getComputedStyle(document.getElementById('err')).display");
-console.log('err display:', errShown, 'simTime:', await evalJs('window.__acid.simTime'));
+const simT0 = await evalJs('window.__acid.simTime');
+console.log('err display:', errShown, 'start simTime:', simT0, '(plan times are relative to it)');
 const plan = planText.split(',').map(s => { const [label, rest] = s.split('@'); const sep = rest.indexOf(':'); const t = sep < 0 ? rest : rest.slice(0, sep), js = sep < 0 ? undefined : rest.slice(sep + 1); return { label, t: parseFloat(t), js }; });
 const t0 = Date.now();
 for (const p of plan) {
   while (true) {
-    const st = await evalJs('window.__acid.simTime');
+    const st = await evalJs('window.__acid.simTime') - simT0;
     if (st >= p.t) break;
     if (Date.now() - t0 > 600000) throw new Error('timeout waiting for simTime ' + p.t);
     await sleep(200);
   }
   if (p.js) await evalJs(decodeURIComponent(p.js));
-  const st = await evalJs('window.__acid.simTime');
+  const st = await evalJs('window.__acid.simTime') - simT0;
   const info = await evalJs('JSON.stringify({bub: window.__acidBubbles ? window.__acidBubbles.length : null, fps: window.__acid.fpsCap, scale: window.__acid.renderScale})');
   const shot = await send('Page.captureScreenshot', { format: 'png' });
   writeFileSync(join(outDir, p.label + '.png'), Buffer.from(shot.result.data, 'base64'));

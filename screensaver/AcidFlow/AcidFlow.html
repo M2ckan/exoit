@@ -577,7 +577,7 @@ function acidMain() {
     linesOn: !!S.mystify.enabled,
     bubblesOn: !!S.bubbles.enabled,
     frame: 0,
-    simTime: 0,
+    simTime: Math.random() * 20000,   // a random point a few hours into the flow: a different picture and palette every start (?start= pins it)
     lastNow: performance.now(),
     frameTimes: [],
     lastAdapt: performance.now(),
@@ -704,10 +704,10 @@ function acidMain() {
   const MAX_ERUPT = 6;
   const eruptions = [];
   const eruptA = new Float32Array(MAX_ERUPT * 4), eruptB = new Float32Array(MAX_ERUPT * 4), eruptC = new Float32Array(MAX_ERUPT * 4);
-  let nextEruption = E.enabled ? 8 + Math.random() * E.every : Infinity;
-  let nextBreakthrough = (E.enabled && E.btEvery > 0) ? E.btEvery * rnd(0.5, 1.0) : Infinity;
+  let nextEruption = E.enabled ? state.simTime + 8 + Math.random() * E.every : Infinity;
+  let nextBreakthrough = (E.enabled && E.btEvery > 0) ? state.simTime + E.btEvery * rnd(0.5, 1.0) : Infinity;
   let breakthrough = null;
-  let nextTakeover = (E.enabled && E.takeEvery > 0) ? E.takeEvery * rnd(0.6, 1.0) : Infinity;
+  let nextTakeover = (E.enabled && E.takeEvery > 0) ? state.simTime + E.takeEvery * rnd(0.6, 1.0) : Infinity;
 
   // the next palette starts now, in full: a takeover drop carries it across the picture
   function jumpPalette() {
@@ -793,7 +793,7 @@ function acidMain() {
   const MAX_BUB = 16;
   const bubbles = [];
   const bubA = new Float32Array(MAX_BUB * 4), bubB = new Float32Array(MAX_BUB * 4);
-  let nextBubble = BB.enabled ? 1.5 + Math.random() * BB.every : Infinity;
+  let nextBubble = BB.enabled ? state.simTime + 1.5 + Math.random() * BB.every : Infinity;
   const POP_SECONDS = 0.45;
 
   function spawnBubble() {
@@ -1149,6 +1149,7 @@ function acidMain() {
   if (qs.has('fps')) state.fpsCap = clamp(parseInt(qs.get('fps'), 10) || 60, 10, 60);
   if (qs.has('maxscale')) state.maxScale = clamp(parseFloat(qs.get('maxscale')) || 1, 0.35, 1);
   if (qs.has('speed')) state.speed = clamp(parseFloat(qs.get('speed')) || 1, 0.05, 8);
+  if (qs.has('start')) { const t0 = clamp(parseFloat(qs.get('start')) || 0, 0, 1e6); const shift = t0 - state.simTime; state.simTime = t0; nextEruption += shift; nextBreakthrough += shift; nextTakeover += shift; nextBubble += shift; }
   if (qs.has('scale')) state.renderScale = clamp(parseFloat(qs.get('scale')) || 0.75, 0.25, 1);
   state.renderScale = Math.min(state.renderScale, state.maxScale);
   if (qs.has('palette')) { state.autoPalette = false; state.paletteIndex = clamp((parseInt(qs.get('palette'), 10) || 1) - 1, 0, N_PUBLIC - 1); }

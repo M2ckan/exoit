@@ -54,7 +54,7 @@ CPU cost is the Chromium compositor at the capped frame rate.
 
 ## HTML URL parameters
 
-`?fps=30` `?maxscale=0.75` `?scale=0.5` `?speed=2` `?palette=3` `?hint=0` `?saver=1`
+`?fps=30` `?maxscale=0.75` `?scale=0.5` `?speed=2` `?palette=3` `?start=0` (pin the otherwise random starting point) `?hint=0` `?saver=1`
 
 Keys in the browser: click/F fullscreen, Space pause, 1-9 palette, A auto palette, S speed, O toggle bubbles, N new bubble, P pop them all, M toggle lines, E eruption now, B breakthrough now, T takeover now, R reset, H hide hint.
 
@@ -67,4 +67,4 @@ One key sequence is not in the hint. The source says where it was forged.
 * Requires the WebView2 Runtime. Built into Windows 11; on Windows 10 it comes with Edge/Office, or install the Evergreen bootstrapper.
 * If Windows starts the screensaver on the secure (Winlogon) desktop, i.e. the machine is already locked, WebView2 may refuse to start. The host then exits cleanly and logs to `%LOCALAPPDATA%\AcidFlow\AcidFlow.log`; Windows simply shows the lock screen.
 * A screen saver enforced by GPO/Intune under `HKCU\Software\Policies` overrides the per-user registration.
-* The current `.scr` (1.3.2) was built on Windows with `src\build.ps1` (csc.exe from .NET Framework 4.8).
+* The current `.scr` (1.3.3) was built on Windows with `src\build.ps1` (csc.exe from .NET Framework 4.8).
