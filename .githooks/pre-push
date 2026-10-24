@@ -1,5 +1,8 @@
 #!/bin/sh
 # exoit guard: every commit about to leave is scanned, diff, message and author.
+# For a new branch only the commits the remote has not seen yet are scanned; the very
+# first push of a repository scans everything.
+remote="$1"
 scanner=$(git config --get exoit.scanner)
 if [ -z "$scanner" ]; then
   echo "exoit guard: git config exoit.scanner is not set. Run tools/Install-Guard.ps1." >&2
@@ -10,7 +13,16 @@ status=0
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$zero" ] && continue
   if [ "$remote_sha" = "$zero" ]; then
-    range="$local_sha"
+    oldest=$(git rev-list "$local_sha" --not --remotes="$remote" | tail -n 1)
+    if [ -z "$oldest" ]; then
+      echo "exoit guard: nothing new on $local_ref"
+      continue
+    fi
+    if git rev-parse -q --verify "$oldest^" >/dev/null 2>&1; then
+      range="$oldest^..$local_sha"
+    else
+      range="$local_sha"
+    fi
   else
     range="$remote_sha..$local_sha"
   fi
