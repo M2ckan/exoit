@@ -114,7 +114,12 @@ $PSNativeCommandUseErrorActionPreference = $false
 $script:EmptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
 $script:GuardedExtensions = @('.scr', '.dll', '.exe', '.msi', '.msix', '.msu', '.pfx', '.p12', '.cer', '.crt', '.der', '.jks', '.ppk')
 $script:SkippedExtensions = @('.png', '.jpg', '.jpeg', '.gif', '.ico', '.webp', '.svg', '.woff', '.woff2', '.ttf', '.otf', '.pdf', '.zip', '.7z', '.intunewin')
-$script:ExemptIPv4 = @('^127\.', '^0\.0\.0\.0$', '^255\.255\.255\.255$', '^192\.0\.2\.', '^198\.51\.100\.', '^203\.0\.113\.')
+# Loopback, unspecified, broadcast, the documentation ranges, and the public resolvers that
+# appear in every connectivity check (Cloudflare, Google, Quad9).
+$script:ExemptIPv4 = @('^127\.', '^0\.0\.0\.0$', '^255\.255\.255\.255$', '^192\.0\.2\.', '^198\.51\.100\.', '^203\.0\.113\.',
+                       '^1\.1\.1\.1$', '^1\.0\.0\.1$', '^8\.8\.8\.8$', '^8\.8\.4\.4$', '^9\.9\.9\.9$')
+# Values no denylist needs to allow: the null GUID.
+$script:BuiltInAllow = @('00000000-0000-0000-0000-000000000000')
 $script:IPv4Pattern = '(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])'
 
 function Stop-Scanner {
@@ -136,7 +141,7 @@ function Get-BuiltInRule {
         New-Rule 'IPv6'             '(?<![\w:])(?:2[0-9a-f]{3}|fd[0-9a-f]{2}):(?:[0-9a-f]{0,4}:){1,6}[0-9a-f]{0,4}(?![\w:])'
         New-Rule 'UncPath'          '\\\\[\w.-]+\\[\w$.-]+'
         New-Rule 'OnMicrosoft'      '\b[\w-]+\.onmicrosoft\.com\b'
-        New-Rule 'InternalHost'     '\b[\w-]+(?:\.[\w-]+)*\.(?:local|lan|corp|internal)\b'
+        New-Rule 'InternalHost'     '\b[\w-]+(?:\.[\w-]+)*\.(?:local|lan|corp|internal)\b(?!\.[\w-])'
         New-Rule 'Sid'              '\bS-1-5-21-\d+-\d+-\d+(?:-\d+)?\b'
         New-Rule 'Jwt'              '\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]{10,}\b'
         New-Rule 'PrivateKey'       '-----BEGIN (?:RSA |EC |OPENSSH |ENCRYPTED |DSA )?PRIVATE KEY-----'
@@ -256,7 +261,7 @@ function Find-Hit {
                     if (Test-ExemptIPv4 $value) { continue }
                     if (Test-InNetwork -Address $value -Networks $Denylist.Networks) { $name = 'Denylist.Network' }
                 }
-                if (Test-Allowed -Value $value -Allow $Denylist.Allow) { continue }
+                if (Test-Allowed -Value $value -Allow (@($Denylist.Allow) + $script:BuiltInAllow)) { continue }
                 $hits.Add([pscustomobject]@{ Path = $Label; Line = $i + 1; Rule = $name; Match = $value })
             }
         }
