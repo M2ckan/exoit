@@ -73,10 +73,11 @@
             Words    = @('CustomerA')
             Domains  = @('customera.example')
             Hosts    = @('SRV-CUSTA01')
-            Networks = @('192.168.77.0/24')
-            Guids    = @('11111111-2222-3333-4444-555555555555')
+            Networks = @('192.0.2.0/24')
+            Guids    = @('<tenant, app or object id>')
             Allow    = @('contoso.com', 'noreply@anthropic.com')
         }
+    (The example network is a documentation range: the scanner scans its own help too.)
 #>
 [CmdletBinding(DefaultParameterSetName = 'Path')]
 param(

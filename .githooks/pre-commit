@@ -1,0 +1,8 @@
+#!/bin/sh
+# exoit guard: nothing sensitive leaves this machine. Wired up by tools/Install-Guard.ps1.
+scanner=$(git config --get exoit.scanner)
+if [ -z "$scanner" ]; then
+  echo "exoit guard: git config exoit.scanner is not set. Run tools/Install-Guard.ps1." >&2
+  exit 1
+fi
+exec pwsh -NoProfile -NonInteractive -File "$scanner" -Staged
