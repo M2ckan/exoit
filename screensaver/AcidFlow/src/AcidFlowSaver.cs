@@ -25,8 +25,8 @@ using Microsoft.Win32;
 [assembly: AssemblyTitle("AcidFlow")]
 [assembly: AssemblyDescription("AcidFlow screensaver")]
 [assembly: AssemblyProduct("AcidFlow")]
-[assembly: AssemblyVersion("1.2.1.0")]
-[assembly: AssemblyFileVersion("1.2.1.0")]
+[assembly: AssemblyVersion("1.3.1.0")]
+[assembly: AssemblyFileVersion("1.3.1.0")]
 
 namespace AcidFlow
 {

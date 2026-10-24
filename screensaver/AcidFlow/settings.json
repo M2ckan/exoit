@@ -24,9 +24,25 @@
   // (2..16 hex colours, looped into a smooth gradient)
   "palettes": [],
 
-  // Mystify-style line shapes that drift through the picture and bleed into the fluid
-  "mystify": {
+  // Thin soap bubbles that well up out of the picture, rise slowly and fade or pop.
+  // The rim bleeds into the fluid, so the flow carries ghost rings away and a pop leaves a burst behind.
+  "bubbles": {
     "enabled": true,
+    "count": 8,             // bubbles on screen at most (1..16)
+    "everySeconds": 2.5,    // average seconds between new bubbles
+    "size": 1.0,            // radius multiplier
+    "life": 16,             // seconds a bubble lives (randomised 0.7x..1.3x)
+    "rise": 1.0,            // upward drift speed
+    "thickness": 1.0,       // rim thickness
+    "opacity": 1.0,         // rim brightness in the picture (0 = no crisp rim, only the ink in the fluid)
+    "lens": 1.0,            // refraction inside the bubble (0 = flat)
+    "ink": 1.0,             // how strongly the rim bleeds into the fluid (0 = off)
+    "pop": 0.5,             // share of bubbles that pop instead of fading out (0..1)
+  },
+
+  // Mystify-style line shapes that drift through the picture and bleed into the fluid (off by default since 1.3)
+  "mystify": {
+    "enabled": false,
     "shapes": 2,            // number of polygons (1..8)
     "points": 4,            // vertices per polygon (3..8)
     "speed": 1.0,           // movement speed
@@ -37,15 +53,17 @@
     "ink": 1.0,             // how strongly the lines bleed into the fluid (0 = off)
   },
 
-  // Eruptions: small drops of colour. A ripple pushes the fluid aside and a kaleidoscopic bloom is written over it.
-  // Breakthroughs fold the whole screen kaleidoscopically for a few seconds.
+  // Eruptions: inverted drops. A soft dimple sinks into the picture, then a kaleidoscopic bloom wells up out of it.
+  // Breakthroughs fold the whole screen kaleidoscopically for a few seconds. Off since 1.3.1 (bubbles only).
   "eruptions": {
-    "enabled": true,
+    "enabled": false,
     "everySeconds": 10,     // average seconds between eruptions (randomised 0.5x..1.5x)
     "intensity": 1.0,       // size of the drop and strength of its ripple (0.2..3)
-    "duration": 6,          // seconds a bloom lives before the flow has dissolved it
+    "duration": 8,          // seconds a drop lives: bubble, plop, then the flow takes the colour apart
     "symmetry": 6,          // kaleidoscope folds in the bloom (0 = none, max 16)
     "breakthroughEverySeconds": 240,  // whole-screen kaleidoscope (0 = off)
     "breakthroughSeconds": 10,
+    "takeoverEverySeconds": 240,      // a drop that swallows the whole picture and brings the next palette (0 = off)
+    "takeoverSeconds": 12,
   },
 }

@@ -28,7 +28,7 @@
 <body>
 <canvas id="c"></canvas>
 <canvas id="lines"></canvas>
-<div id="hint"><b>Click</b> fullscreen &nbsp;·&nbsp; <b>Space</b> pause &nbsp;·&nbsp; <b>1-9</b> palette &nbsp;·&nbsp; <b>A</b> auto &nbsp;·&nbsp; <b>S</b> speed &nbsp;·&nbsp; <b>M</b> lines &nbsp;·&nbsp; <b>E</b> erupt &nbsp;·&nbsp; <b>B</b> breakthrough &nbsp;·&nbsp; <b>R</b> reset &nbsp;·&nbsp; <b>H</b> hide</div>
+<div id="hint"><b>Click</b> fullscreen &nbsp;·&nbsp; <b>Space</b> pause &nbsp;·&nbsp; <b>1-9</b> palette &nbsp;·&nbsp; <b>A</b> auto &nbsp;·&nbsp; <b>S</b> speed &nbsp;·&nbsp; <b>O</b> bubbles &nbsp;·&nbsp; <b>N</b> new bubble &nbsp;·&nbsp; <b>P</b> pop &nbsp;·&nbsp; <b>M</b> lines &nbsp;·&nbsp; <b>E</b> erupt &nbsp;·&nbsp; <b>B</b> breakthrough &nbsp;·&nbsp; <b>T</b> takeover &nbsp;·&nbsp; <b>R</b> reset &nbsp;·&nbsp; <b>H</b> hide</div>
 <div id="err">This screensaver needs WebGL2. Try Chrome, Edge or Firefox with hardware acceleration enabled.</div>
 
 <script id="vs" type="x-shader/x-vertex">#version 300 es
@@ -108,7 +108,15 @@ const int MAX_ERUPT = 6;
 uniform int   uEruptN;
 uniform vec4  uEruptA[MAX_ERUPT];   // centre (p-space), phase 0..1, strength
 uniform vec4  uEruptB[MAX_ERUPT];   // hue offset, ring radius, rotation, symmetry folds
+uniform vec4  uEruptC[MAX_ERUPT];   // x = takeover: the drop swallows the whole picture and brings the next palette
 uniform float uEruptInject;         // how fast the bloom overwrites the fluid
+
+// bubbles: thin soap bubbles whose rim bleeds into the fluid, so the picture itself carries their ghosts away
+const int MAX_BUB = 16;
+uniform int   uBubN;
+uniform vec4  uBubA[MAX_BUB];       // centre (p-space), radius, alpha
+uniform vec4  uBubB[MAX_BUB];       // hue offset, iridescence rotation, pop 0..1
+uniform float uBubInk;              // how strongly the rim is written into the fluid per frame
 
 //COMMON//
 
@@ -138,26 +146,20 @@ void main() {
   // ---- eruptions
   vec3 bloom = vec3(0.0);
   float bloomMask = 0.0;
-  float rim = 0.0;   // bubble membrane: a thin bright edge while it swells
   for (int i = 0; i < MAX_ERUPT; i++) {
     if (i >= uEruptN) break;
     vec4 A = uEruptA[i], B = uEruptB[i];
+    float big = uEruptC[i].x;
     vec2 d = p - A.xy;
     float r = length(d);
     float phase = A.z, str = max(A.w, 0.3), R = B.y;
     if (r > R * 1.8 + 0.25) continue;
     vec2 dir = d / max(r, 1e-4);
-    // 1) the drop swells from a point: a dome pushes the picture outward from underneath, no colour yet
-    float dome = sin(3.14159 * clamp(r / max(R, 1e-3), 0.0, 1.0));
-    float swell = (1.0 - smoothstep(0.0, 0.35, phase)) * str * 0.9;
-    v += dir * dome * swell;
-    rim = max(rim, exp(-pow((r - R) / (0.012 * str + 0.004), 2.0)) * smoothstep(0.0, 0.05, phase) * (1.0 - smoothstep(0.12, 0.22, phase)));
-    // 2) the plop: the surface gives and two or three ripples travel outward
-    float pop = smoothstep(0.12, 0.25, phase);
-    float wave = cos((r - R) * (90.0 / str)) * exp(-pow((r - R) / (0.05 * str + 0.015), 2.0));
-    v += dir * wave * pop * str * 1.4 * pow(1.0 - phase, 2.0);
-    // a twist around the core so the colour spirals while it dissolves
-    v += vec2(-dir.y, dir.x) * exp(-r * r / (R * R + 1e-3)) * str * 0.5 * pop * (1.0 - phase);
+    // 1) while the dimple sinks nothing happens in the fluid: it is drawn at display time in fs_show
+    // 2) the colour wells up from inside and gently pushes the surroundings away, no ring, soft everywhere
+    float pop = smoothstep(0.18, 0.26, phase);
+    float push = exp(-r * r / (R * R + 1e-4)) * smoothstep(0.0, 0.2 * R, r);
+    v += dir * push * pop * str * mix(0.25, 0.5, big) * (1.0 - smoothstep(mix(0.4, 0.55, big), mix(0.6, 0.7, big), phase));
     // kaleidoscopic mandala inside the ring
     float rawAng = atan(d.y, d.x) + B.z;
     float ang = rawAng;
@@ -166,18 +168,21 @@ void main() {
       ang = abs(mod(rawAng + seg * 0.5, seg) - seg * 0.5);
     }
     vec2 q2 = vec2(cos(ang), sin(ang)) * r;
-    float n = fbm3(q2 * (34.0 / str) + vec2(B.x * 3.0, phase * 2.0));
-    float rings = 0.5 + 0.5 * sin(r * (170.0 / str) - phase * 25.0 + n * 7.0);
-    float petals = 0.5 + 0.5 * cos(rawAng * max(B.w, 3.0) * 2.0 + r * 85.0 - phase * 8.0 + n * 4.0);
+    // a takeover drop zooms its pattern up as it grows, so the whole screen gets a few bold rings instead of grain
+    float fs = mix(1.0, clamp(0.12 / max(R, 1e-3), 0.08, 1.0), big);
+    float n = fbm3(q2 * (34.0 * fs / str) + vec2(B.x * 3.0, phase * 2.0));
+    float rings = 0.5 + 0.5 * sin(r * (170.0 * fs / str) - phase * 25.0 + n * 7.0);
+    float petals = 0.5 + 0.5 * cos(rawAng * max(B.w, 3.0) * 2.0 + r * 85.0 * fs - phase * 8.0 + n * 4.0);
     // dark gaps between the bright bands: a readable mandala instead of a pastel disc
     float pattern = smoothstep(0.15, 0.85, rings) * (0.35 + 0.65 * smoothstep(0.2, 0.8, petals));
-    vec3 bc = pal(B.x + n * 1.6 + rings * 0.35 + r * 4.0 / str);
+    vec3 bc = pal(B.x + n * 2.2 + rings * 0.6 + r * 4.0 * fs / str);
     bc = pow(bc, vec3(0.75)) * (0.35 + 1.4 * pattern);
-    bc += vec3(1.0, 0.95, 0.85) * exp(-r * r / (0.00025 * str)) * pop * (1.0 - phase);   // bright core at the plop
-    // 3) colour wells up from the centre after the plop and is then carried away by the ripples
-    float Rb = R * 0.8 * smoothstep(0.1, 0.5, phase);
-    float inside = 1.0 - smoothstep(Rb * 0.7, Rb * 1.05, r);
-    float m = inside * pop * pow(1.0 - phase, 1.2);
+    bc += vec3(1.0, 0.95, 0.85) * exp(-r * r / (0.0004 * str)) * pop * (1.0 - phase);   // soft glow at the core
+    // 3) the colour is stamped with a gaussian edge that grows from the centre, briefly, then the flow takes it apart
+    //    a takeover drop keeps growing (R comes from JS) until the gaussian covers the whole screen
+    float Rb = R * mix(smoothstep(0.18, 0.45, phase), 1.0, big) + 1e-4;
+    float inside = exp(-2.0 * r * r / (Rb * Rb));
+    float m = inside * pop * (1.0 - smoothstep(mix(0.45, 0.62, big), mix(0.65, 0.75, big), phase));
     bloom = mix(bloom, bc, m);
     bloomMask = max(bloomMask, m);
   }
@@ -210,9 +215,23 @@ void main() {
   vec4 ink = texture(uInk, vec2(vUv.x, 1.0 - vUv.y));
   col += ink.rgb * ink.a * uInkAmount;
 
+  // ---- bubble rims: a soft iridescent ring is written where each bubble sits; a pop writes a burst of it
+  for (int i = 0; i < MAX_BUB; i++) {
+    if (i >= uBubN) break;
+    vec4 A = uBubA[i], B = uBubB[i];
+    vec2 d = p - A.xy;
+    float r = length(d), R = A.z;
+    if ((A.w <= 0.001 && B.z <= 0.001) || r > R * 1.4) continue;
+    float nr = r / max(R, 1e-4);
+    float rim = exp(-pow((nr - 1.0) / 0.07, 2.0));
+    float ang = atan(d.y, d.x) + B.y * 6.2831853;
+    vec3 rc = pal(B.x + 0.12 * cos(ang) + nr * 0.3);
+    // while it lives the rim seeps in faintly; a pop writes a burst of it regardless of how faint the bubble already is
+    col += rc * rim * uBubInk * (A.w + 10.0 * B.z);
+  }
+
   // ---- eruption bloom overwrites the fluid, then gets carried away by it
   col = mix(col, bloom, bloomMask * uEruptInject);
-  col = col * (1.0 + 0.9 * rim) + 0.10 * rim;
 
   col = clamp(col, 0.0, 1.3);
   frag = vec4(col, 1.0);
@@ -234,8 +253,28 @@ uniform float uPulse;     // 0..1 flash right after an eruption
 uniform float uKal;       // 0..1 whole-screen kaleidoscope (breakthrough)
 uniform float uKalSym;    // folds
 uniform float uKalRot;    // rotation of the fold
+// inverted drops: while an eruption swells the picture sinks into a soft dimple, a gaussian lens with no edge
+const int MAX_ERUPT = 6;
+uniform int   uEruptN;
+uniform vec4  uEruptA[MAX_ERUPT];   // centre (p-space), phase 0..1, strength
+uniform vec4  uEruptB[MAX_ERUPT];   // hue offset, radius, rotation, symmetry
+// bubbles: thin soap bubbles. A glass lens bulges the picture inside, a thin iridescent fresnel rim and one highlight
+const int MAX_BUB = 16;
+uniform int   uBubN;
+uniform vec4  uBubA[MAX_BUB];       // centre (p-space), radius, alpha
+uniform vec4  uBubB[MAX_BUB];       // hue offset, iridescence rotation, pop 0..1
+uniform float uBubRim;              // rim brightness
+uniform float uBubLens;             // refraction strength inside
+uniform float uBubThick;            // rim thickness multiplier
+uniform sampler2D uPal0;
+uniform sampler2D uPal1;
+uniform float uPalMix;
 
 float hash1(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+vec3 pal(float t) {
+  vec2 uv = vec2(t, 0.5);
+  return mix(texture(uPal0, uv).rgb, texture(uPal1, uv).rgb, uPalMix);
+}
 
 // chromatic bloom: sample neighbours with slight offset per channel; the spread widens during a pulse
 vec3 fetch(vec2 uv, float spread) {
@@ -250,7 +289,60 @@ vec3 fetch(vec2 uv, float spread) {
 
 void main() {
   float spread = 1.5 + 10.0 * uPulse;
-  vec3 col = fetch(vUv, spread);
+
+  // inverted drops
+  vec2 bAsp = vec2(uRes.x / uRes.y, 1.0);
+  vec2 bp = (vUv - 0.5) * bAsp;
+  vec2 uv = vUv;
+  float shade = 1.0;
+  for (int i = 0; i < MAX_ERUPT; i++) {
+    if (i >= uEruptN) break;
+    vec4 A = uEruptA[i], B = uEruptB[i];
+    float phase = A.z, R = B.y;
+    float vis = smoothstep(0.0, 0.05, phase) * (1.0 - smoothstep(0.22, 0.32, phase));
+    if (vis <= 0.0) continue;
+    vec2 d = bp - A.xy;
+    float r = length(d);
+    if (r > R * 2.5) continue;
+    float g = exp(-r * r / (0.6 * R * R + 1e-6));
+    uv += (d / bAsp) * 0.8 * g * vis;                // the picture sinks away from the viewer: a dimple, no edge
+    shade *= 1.0 - 0.35 * g * vis;                    // and darkens a little towards the bottom of it
+  }
+
+  // bubbles: lens first (moves the sample point), rim and highlight are added on top afterwards
+  vec3 rimCol = vec3(0.0);
+  float film = 0.0;
+  const vec2 hdir = vec2(-0.62, 0.78);              // light from the top left
+  for (int i = 0; i < MAX_BUB; i++) {
+    if (i >= uBubN) break;
+    vec4 A = uBubA[i], B = uBubB[i];
+    float al = A.w, R = A.z;
+    if (al <= 0.001 && B.z <= 0.001) continue;
+    vec2 d = bp - A.xy;
+    float r = length(d);
+    if (r > R * 1.25) continue;
+    float nr = r / max(R, 1e-4);
+    float inside = 1.0 - smoothstep(0.90, 1.0, nr);
+    // glass: the picture bulges towards the viewer, most near the edge, like looking through a sphere
+    float bulge = nr * nr * nr;
+    uv -= (d / bAsp) * 0.18 * uBubLens * bulge * inside * al;
+    // thin fresnel rim: thickness relative to the bubble, never thinner than about 1.5 px
+    float w = max(0.028 * uBubThick, 1.6 / (uRes.y * max(R, 1e-3)));
+    float rim = exp(-pow((nr - 0.985) / w, 2.0));
+    rim += 0.25 * exp(-pow((nr - 0.96) / (w * 3.5), 2.0)) * (1.0 - smoothstep(0.98, 1.02, nr));   // a whisper of film just inside
+    // iridescence: the palette runs around the circumference and slowly turns
+    float ang = atan(d.y, d.x) + B.y * 6.2831853;     // continuous around the circle, no seam, turns slowly
+    vec3 rc = pal(B.x + 0.12 * cos(ang) + nr * 0.25);
+    rc = mix(rc, vec3(1.0), 0.30);
+    // one soft highlight where the light hits
+    vec2 nd = d / max(r, 1e-4);
+    float spec = pow(max(dot(nd, hdir), 0.0), 14.0) * exp(-pow((nr - 0.86) / 0.10, 2.0));
+    float popFlash = 1.0 + 1.5 * B.z;
+    rimCol += (rc * rim * 0.85 + vec3(1.0, 0.98, 0.95) * spec * 0.7) * al * uBubRim * popFlash;
+    film = max(film, 0.05 * inside * al);
+  }
+  vec3 col = fetch(uv, spread) * shade;
+  col = col * (1.0 + film) + rimCol;
 
   // breakthrough: fold the whole picture kaleidoscopically around the centre and cross-fade to it
   if (uKal > 0.001) {
@@ -317,8 +409,21 @@ function acidMain() {
     paletteSeconds: 150,     // time each palette stays before morphing to the next
     morphSeconds: 40,        // cross-fade length
     palettes: [],            // [] = all built-in. Or a list of names and/or {name, colors:[hex...]} objects.
-    mystify: {
+    bubbles: {
       enabled: true,
+      count: 8,              // bubbles on screen at most, 1..16
+      everySeconds: 2.5,     // average seconds between new bubbles
+      size: 1.0,             // radius multiplier
+      life: 16,              // seconds a bubble lives (randomised 0.7x..1.3x)
+      rise: 1.0,             // upward drift speed
+      thickness: 1.0,        // rim thickness
+      opacity: 1.0,          // rim brightness in the picture (0 = no crisp rim, only the ink)
+      lens: 1.0,             // refraction inside the bubble (0 = flat)
+      ink: 1.0,              // how strongly the rim bleeds into the fluid (0 = off)
+      pop: 0.5,              // share of bubbles that pop instead of fading out, 0..1
+    },
+    mystify: {
+      enabled: false,
       shapes: 2,             // number of polygons
       points: 4,             // vertices per polygon
       speed: 1.0,            // movement speed
@@ -329,13 +434,15 @@ function acidMain() {
       ink: 1.0,              // how strongly the lines bleed into the fluid (0 = off)
     },
     eruptions: {
-      enabled: true,
-      everySeconds: 5,      // average seconds between eruptions (randomised 0.5x..1.5x)
+      enabled: false,         // off since 1.3.1: bubbles only. E/B/T keys still fire them by hand
+      everySeconds: 10,      // average seconds between eruptions (randomised 0.5x..1.5x)
       intensity: 1.0,        // size of the drop and strength of its ripple
-      duration: 6,           // seconds a bloom lives before the flow has dissolved it
+      duration: 8,           // seconds a drop lives: bubble, plop, then the flow takes the colour apart
       symmetry: 6,           // kaleidoscope folds in the bloom (0 = none)
       breakthroughEverySeconds: 240,  // whole-screen kaleidoscope (0 = off)
       breakthroughSeconds: 10,
+      takeoverEverySeconds: 240,      // a drop that swallows the whole picture and brings the next palette (0 = off)
+      takeoverSeconds: 12,
     },
   };
 
@@ -467,12 +574,14 @@ function acidMain() {
     paletteIndex: 0,
     speed: clamp(num(S.speed, 1), 0.05, 8),
     linesOn: !!S.mystify.enabled,
+    bubblesOn: !!S.bubbles.enabled,
     frame: 0,
     simTime: 0,
     lastNow: performance.now(),
     frameTimes: [],
     lastAdapt: performance.now(),
-    fx: { n: 0, pulse: 0, kal: 0, kalSym: 6, kalRot: 0 },
+    fx: { n: 0, pulse: 0, kal: 0, kalSym: 6, kalRot: 0, freeze: false },
+    palOffset: 0,
   };
 
   // ---- palettes -> 1D gradient textures ----------------------------------------------
@@ -537,7 +646,7 @@ function acidMain() {
   const MORPH_TIME = clamp(num(S.morphSeconds, 40), 1, PALETTE_PERIOD);
   function currentPalette(simT) {
     if (!state.autoPalette || PALETTES.length === 1) { const i = state.paletteIndex % PALETTES.length; return { i0: i, i1: i, f: 0 }; }
-    const cyc = Math.max(0, simT) / PALETTE_PERIOD;
+    const cyc = Math.max(0, simT + state.palOffset) / PALETTE_PERIOD;
     const i0 = Math.floor(cyc) % PALETTES.length;
     const i1 = (i0 + 1) % PALETTES.length;
     const local = (cyc - Math.floor(cyc)) * PALETTE_PERIOD;
@@ -585,20 +694,33 @@ function acidMain() {
     symmetry: clamp(Math.round(num(S.eruptions.symmetry, 6)), 0, 16),
     btEvery: clamp(num(S.eruptions.breakthroughEverySeconds, 240), 0, 36000),
     btSeconds: clamp(num(S.eruptions.breakthroughSeconds, 10), 2, 120),
+    takeEvery: clamp(num(S.eruptions.takeoverEverySeconds, 240), 0, 36000),
+    takeSeconds: clamp(num(S.eruptions.takeoverSeconds, 12), 4, 60),
   };
   const MAX_ERUPT = 6;
   const eruptions = [];
-  const eruptA = new Float32Array(MAX_ERUPT * 4), eruptB = new Float32Array(MAX_ERUPT * 4);
-  let nextEruption = E.enabled ? 3 : Infinity;
+  const eruptA = new Float32Array(MAX_ERUPT * 4), eruptB = new Float32Array(MAX_ERUPT * 4), eruptC = new Float32Array(MAX_ERUPT * 4);
+  let nextEruption = E.enabled ? 8 + Math.random() * E.every : Infinity;
   let nextBreakthrough = (E.enabled && E.btEvery > 0) ? E.btEvery * rnd(0.5, 1.0) : Infinity;
   let breakthrough = null;
+  let nextTakeover = (E.enabled && E.takeEvery > 0) ? E.takeEvery * rnd(0.6, 1.0) : Infinity;
 
-  function spawnEruption() {
+  // the next palette starts now, in full: a takeover drop carries it across the picture
+  function jumpPalette() {
+    if (PALETTES.length === 1) return;
+    if (!state.autoPalette) { state.paletteIndex = (state.paletteIndex + 1) % PALETTES.length; return; }
+    const cyc = Math.max(0, state.simTime + state.palOffset) / PALETTE_PERIOD;
+    state.palOffset = (Math.floor(cyc) + 1) * PALETTE_PERIOD - state.simTime;
+  }
+
+  function spawnEruption(big) {
     if (eruptions.length >= MAX_ERUPT) eruptions.shift();
+    if (big) jumpPalette();
     eruptions.push({
-      x: 0.5, y: 0.5,
-      t0: state.simTime, dur: E.duration * rnd(0.8, 1.25),
-      strength: E.intensity * rnd(0.7, 1.3),
+      big: !!big,
+      x: rnd(0.08, 0.92), y: rnd(0.08, 0.92),
+      t0: state.simTime, dur: big ? E.takeSeconds * rnd(0.9, 1.15) : E.duration * rnd(0.8, 1.25),
+      strength: big ? E.intensity * 1.3 : E.intensity * rnd(0.7, 1.3),
       hue: Math.random(), rot0: rnd(0, 6.283), rotSpeed: rnd(0.6, 1.6) * (Math.random() < 0.5 ? -1 : 1),
       sym: E.symmetry === 0 ? 0 : clamp(E.symmetry + (Math.random() < 0.3 ? 2 : 0), 3, 16),
     });
@@ -613,28 +735,102 @@ function acidMain() {
     const T = state.simTime;
     if (T >= nextEruption) { spawnEruption(); nextEruption = T + E.every * rnd(0.5, 1.5); }
     if (T >= nextBreakthrough) { startBreakthrough(); nextBreakthrough = T + E.btEvery * rnd(0.7, 1.3); }
+    if (T >= nextTakeover) { spawnEruption(true); nextTakeover = T + E.takeEvery * rnd(0.6, 1.4); }
     for (let i = eruptions.length - 1; i >= 0; i--) if (T - eruptions[i].t0 > eruptions[i].dur) eruptions.splice(i, 1);
     if (breakthrough && T - breakthrough.t0 > breakthrough.dur) breakthrough = null;
     const aspect = simW / Math.max(1, simH);
-    let pulse = 0;
+    let pulse = 0, freeze = false;
     for (let i = 0; i < eruptions.length; i++) {
       const e = eruptions[i], age = T - e.t0, phase = clamp(age / e.dur, 0, 1);
-      const R = 0.11 * e.strength * (1 - Math.exp(-3 * phase)) / (1 - Math.exp(-3));
+      let R = 0.11 * e.strength * (1 - Math.exp(-5 * phase)) / (1 - Math.exp(-5));
+      if (e.big) {
+        // sneak, then bang: the radius creeps for a while and then races across the screen
+        const g = clamp((phase - 0.2) / 0.35, 0, 1);
+        R += 2.8 * g * g * g;
+        // no fresh colour is written outside the drop while it grows, so the old picture waits for it
+        if (phase > 0.05 && phase < 0.55) freeze = true;
+      }
+      eruptC[i * 4] = e.big ? 1 : 0;
       eruptA[i * 4] = (e.x - 0.5) * aspect; eruptA[i * 4 + 1] = e.y - 0.5;
       eruptA[i * 4 + 2] = phase; eruptA[i * 4 + 3] = e.strength;
       eruptB[i * 4] = e.hue; eruptB[i * 4 + 1] = R;
       eruptB[i * 4 + 2] = e.rot0 + e.rotSpeed * age; eruptB[i * 4 + 3] = e.sym;
-      const popAt = 0.18 * e.dur;   // the flash belongs to the plop, not to the first swelling
-      pulse = Math.max(pulse, 0.3 * e.strength * smooth(clamp(age / popAt, 0, 1)) * Math.exp(-Math.max(0, age - popAt) * 3));
+      const popAt = (e.big ? 0.45 : 0.24) * e.dur;   // the pulse belongs to the moment the colour breaks through
+      pulse = Math.max(pulse, (e.big ? 0.5 : 0.2) * e.strength * smooth(clamp(age / popAt, 0, 1)) * Math.exp(-Math.max(0, age - popAt) * 2));
     }
     const fx = state.fx;
-    fx.n = eruptions.length; fx.pulse = clamp(pulse, 0, 1);
+    fx.n = eruptions.length; fx.pulse = clamp(pulse, 0, 1); fx.freeze = freeze;
     fx.kal = 0;
     if (breakthrough) {
       const age = T - breakthrough.t0;
       fx.kal = smooth(clamp(age / 2.5, 0, 1)) * smooth(clamp((breakthrough.dur - age) / 3.5, 0, 1));
       fx.kalSym = breakthrough.sym; fx.kalRot = breakthrough.rot0 + breakthrough.rotSpeed * age;
     }
+  }
+
+  // ---- bubbles -------------------------------------------------------------------------------
+  //  Thin soap bubbles. They well up out of the picture (grow and fade in), rise slowly with a
+  //  wobble, and either fade away or pop. Rendering is all GPU side: the display shader draws the
+  //  lens, rim and highlight; the sim shader writes the rim into the fluid so the flow carries
+  //  ghost rings away and a pop leaves a burst behind.
+  const BB = {
+    enabled: !!S.bubbles.enabled,
+    count: clamp(Math.round(num(S.bubbles.count, 8)), 1, 16),
+    every: clamp(num(S.bubbles.everySeconds, 2.5), 0.2, 600),
+    size: clamp(num(S.bubbles.size, 1), 0.2, 4),
+    life: clamp(num(S.bubbles.life, 16), 2, 300),
+    rise: clamp(num(S.bubbles.rise, 1), 0, 5),
+    thick: clamp(num(S.bubbles.thickness, 1), 0.3, 4),
+    opacity: clamp(num(S.bubbles.opacity, 1), 0, 3),
+    lens: clamp(num(S.bubbles.lens, 1), 0, 3),
+    ink: clamp(num(S.bubbles.ink, 1), 0, 3),
+    pop: clamp(num(S.bubbles.pop, 0.5), 0, 1),
+  };
+  const MAX_BUB = 16;
+  const bubbles = [];
+  const bubA = new Float32Array(MAX_BUB * 4), bubB = new Float32Array(MAX_BUB * 4);
+  let nextBubble = BB.enabled ? 1.5 + Math.random() * BB.every : Infinity;
+  const POP_SECONDS = 0.45;
+
+  function spawnBubble() {
+    if (bubbles.length >= BB.count) return;
+    const R = 0.07 * BB.size * rnd(0.45, 1.5);          // radius in height units
+    bubbles.push({
+      x: rnd(0.06, 0.94), y: rnd(0.04, 0.80), R,
+      t0: state.simTime, dur: BB.life * rnd(0.7, 1.3),
+      hue: Math.random(), rot: rnd(0, 1), rotSpeed: rnd(0.01, 0.03) * (Math.random() < 0.5 ? -1 : 1),
+      ph: rnd(0, 6.283), wob: rnd(0.35, 0.8),
+      vy: 0.010 * BB.rise * rnd(0.7, 1.4) * Math.sqrt(R / 0.07),   // bigger bubbles rise a little faster
+      pops: Math.random() < BB.pop,
+    });
+  }
+  function updateBubbles(dt) {
+    const T = state.simTime;
+    if (T >= nextBubble) { spawnBubble(); nextBubble = T + BB.every * rnd(0.4, 1.6); }
+    const aspect = simW / Math.max(1, simH);
+    for (let i = bubbles.length - 1; i >= 0; i--) {
+      const b = bubbles[i];
+      if (T - b.t0 > b.dur || b.y - 0.5 > 0.5 + b.R * 1.5) bubbles.splice(i, 1);
+    }
+    for (let i = 0; i < bubbles.length; i++) {
+      const b = bubbles[i], age = T - b.t0, left = b.dur - age;
+      b.y += b.vy * dt;
+      b.x += 0.006 * Math.sin(T * b.wob + b.ph) * dt / Math.max(aspect, 0.5);
+      // envelope: well up over the first fifth, then hold, then fade over the last fifth or pop in under half a second
+      const grow = smooth(clamp(age / (0.2 * b.dur), 0, 1));
+      let alpha = grow, pop = 0, R = b.R * (0.35 + 0.65 * grow);
+      if (b.pops) {
+        if (left < POP_SECONDS) { const k = clamp(left / POP_SECONDS, 0, 1); pop = 1 - k; alpha = k * k; R = b.R * (1 + 0.12 * pop); }
+      } else {
+        alpha *= smooth(clamp(left / (0.2 * b.dur), 0, 1));
+      }
+      bubA[i * 4] = (b.x - 0.5) * aspect; bubA[i * 4 + 1] = b.y - 0.5;
+      bubA[i * 4 + 2] = R; bubA[i * 4 + 3] = alpha;
+      bubB[i * 4] = b.hue; bubB[i * 4 + 1] = b.rot + b.rotSpeed * age; bubB[i * 4 + 2] = pop; bubB[i * 4 + 3] = 0;
+    }
+  }
+  function popAll() {
+    for (const b of bubbles) { b.pops = true; b.dur = Math.min(b.dur, state.simTime - b.t0 + POP_SECONDS); }
   }
 
   // ---- Mystify-style line shapes ---------------------------------------------------------
@@ -790,25 +986,42 @@ function acidMain() {
     gl.uniform1f(u.uFlow, m.flow);
     gl.uniform1f(u.uSwirl, m.swirl);
     gl.uniform1f(u.uZoom, m.zoom);
-    gl.uniform1f(u.uInject, carryOnly ? 0.0 : m.inject);
+    gl.uniform1f(u.uInject, (carryOnly || state.fx.freeze) ? 0.0 : m.inject);
     gl.uniform1f(u.uScale, m.scale);
     gl.uniform1f(u.uWarp, m.warp);
     gl.uniform1i(u.uEruptN, carryOnly ? 0 : state.fx.n);
     gl.uniform4fv(u.uEruptA, eruptA);
     gl.uniform4fv(u.uEruptB, eruptB);
+    gl.uniform4fv(u.uEruptC, eruptC);
     gl.uniform1f(u.uEruptInject, 0.3);
+    const bubN = (carryOnly || !state.bubblesOn) ? 0 : bubbles.length;
+    gl.uniform1i(u.uBubN, bubN);
+    gl.uniform4fv(u.uBubA, bubA);
+    gl.uniform4fv(u.uBubB, bubB);
+    gl.uniform1f(u.uBubInk, 0.012 * BB.ink * Math.min(dt * 30, 2));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
   function present(tex) {
     const m = mod(state.simTime);
+    const P = currentPalette(state.simTime);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, canvas.width, canvas.height);
     gl.useProgram(showProg.p);
     const u = showProg.u;
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, palTex[P.i0].tex);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, palTex[P.i1].tex);
     gl.uniform1i(u.uTex, 0);
+    gl.uniform1i(u.uPal0, 1);
+    gl.uniform1i(u.uPal1, 2);
+    gl.uniform1f(u.uPalMix, P.f);
+    gl.uniform1i(u.uBubN, state.bubblesOn ? bubbles.length : 0);
+    gl.uniform4fv(u.uBubA, bubA);
+    gl.uniform4fv(u.uBubB, bubB);
+    gl.uniform1f(u.uBubRim, BB.opacity);
+    gl.uniform1f(u.uBubLens, BB.lens);
+    gl.uniform1f(u.uBubThick, BB.thick);
     gl.uniform2f(u.uRes, canvas.width, canvas.height);
     gl.uniform1f(u.uTime, state.simTime);
     gl.uniform1f(u.uSat, m.sat);
@@ -819,6 +1032,9 @@ function acidMain() {
     gl.uniform1f(u.uKal, state.fx.kal);
     gl.uniform1f(u.uKalSym, state.fx.kalSym);
     gl.uniform1f(u.uKalRot, state.fx.kalRot);
+    gl.uniform1i(u.uEruptN, state.fx.n);
+    gl.uniform4fv(u.uEruptA, eruptA);
+    gl.uniform4fv(u.uEruptB, eruptB);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
@@ -859,6 +1075,7 @@ function acidMain() {
       state.simTime += dt;
       const P = currentPalette(state.simTime);
       updateEruptions();
+      updateBubbles(dt);
       stepShapes(dt, P);
       renderLines(P);
       step(dt, targets[0].tex, targets[1], false);
@@ -900,8 +1117,12 @@ function acidMain() {
     else if (k === 'a') { state.autoPalette = true; showHint(2500); }
     else if (k === 's') { state.speed = state.speed >= 2 ? 0.5 : state.speed * 2; showHint(2500); }
     else if (k === 'm') { state.linesOn = !state.linesOn; }
+    else if (k === 'o') { state.bubblesOn = !state.bubblesOn; }
+    else if (k === 'n') { spawnBubble(); }
+    else if (k === 'p') { popAll(); }
     else if (k === 'e') { spawnEruption(); }
     else if (k === 'b') { startBreakthrough(); }
+    else if (k === 't') { spawnEruption(true); }
     else if (k === 'r') { state.frame = 0; }
     else if (k === 'h') { hint.classList.toggle('hidden'); clearTimeout(hintTimer); }
     else if (k >= '1' && k <= '9') { state.autoPalette = false; state.paletteIndex = (parseInt(k, 10) - 1) % PALETTES.length; }
@@ -928,6 +1149,10 @@ function acidMain() {
   if (qs.get('hint') === '0' || saverMode) hint.style.display = 'none';
   window.__acid = state;
   window.__acidSettings = S;
+  window.__acidEruptions = eruptions;
+  window.__acidBubbles = bubbles;
+  window.__acidSpawnBubble = spawnBubble;
+  window.__acidPopAll = popAll;
 
   resize(true);
   showHint(6000);

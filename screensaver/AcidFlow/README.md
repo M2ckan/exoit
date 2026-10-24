@@ -1,7 +1,11 @@
 # AcidFlow
 
-GPU-rendered psychedelic flow screensaver. v2 adds eruptions: small drops of colour that ripple the fluid and leave a
-kaleidoscopic bloom behind, plus rare whole-screen "breakthroughs" where the picture folds in on itself. One self-contained HTML file (`AcidFlow.html`) plus a
+GPU-rendered psychedelic flow screensaver. v3 (1.3) replaces the Mystify lines with thin soap bubbles: they
+well up out of the picture, rise slowly with a glass lens, an iridescent rim and one highlight, then fade or pop. The rim
+bleeds into the fluid, so the flow carries ghost rings away and a pop leaves a burst behind. The lines are still there
+behind `mystify.enabled` and the M key. Since 1.3.1 the eruptions below are off by default too (`eruptions.enabled`).
+v2 added eruptions: inverted drops, a soft dimple that sinks into the
+picture and then a kaleidoscopic bloom welling up out of it, plus rare whole-screen "breakthroughs" where the picture folds in on itself. One self-contained HTML file (`AcidFlow.html`) plus a
 Windows `.scr` host that wraps it in WebView2.
 
 ## Files
@@ -39,8 +43,9 @@ falls back to the defaults and the reason is logged on the page console. Changes
 | `colorShift`, `saturation`, `brightness`, `vignette` | 1.0 | Colour grading. |
 | `paletteSeconds`, `morphSeconds` | 150, 40 | Palette dwell time and cross-fade. |
 | `palettes` | `[]` (all) | Names of built-ins and/or `{ "name": "...", "colors": ["#hex", ...] }` objects. |
-| `mystify.*` | see file | Mystify-style polygons: count, points, speed, trail, line width, overlay opacity, ink (how much they bleed into the fluid). |
-| `eruptions.*` | see file | Eruptions (v2): `everySeconds`, `intensity`, `duration`, `symmetry` (kaleidoscope folds in the bloom), `breakthroughEverySeconds` and `breakthroughSeconds` (whole-screen kaleidoscope, 0 = off). |
+| `bubbles.*` | see file | Soap bubbles (v3): `count`, `everySeconds`, `size`, `life`, `rise`, `thickness`, `opacity` (crisp rim), `lens` (refraction), `ink` (how much the rim bleeds into the fluid), `pop` (share that pop instead of fading). |
+| `mystify.*` | see file | Mystify-style polygons (off by default since 1.3): count, points, speed, trail, line width, overlay opacity, ink (how much they bleed into the fluid). |
+| `eruptions.*` | see file | Eruptions (v2): `everySeconds`, `intensity`, `duration`, `symmetry` (kaleidoscope folds in the bloom), `breakthroughEverySeconds` and `breakthroughSeconds` (whole-screen kaleidoscope, 0 = off), `takeoverEverySeconds` and `takeoverSeconds` (a drop that swallows the whole picture and brings the next palette, 0 = off). |
 
 Built-in palettes: Prism, Lava lamp, Deep sea, Sunset, Neon, Aurora, Ultraviolet, Ember, Acid, Miami, Forest, Mono ice.
 
@@ -51,7 +56,7 @@ CPU cost is the Chromium compositor at the capped frame rate.
 
 `?fps=30` `?maxscale=0.75` `?scale=0.5` `?speed=2` `?palette=3` `?hint=0` `?saver=1`
 
-Keys in the browser: click/F fullscreen, Space pause, 1-9 palette, A auto palette, S speed, M toggle lines, E eruption now, B breakthrough now, R reset, H hide hint.
+Keys in the browser: click/F fullscreen, Space pause, 1-9 palette, A auto palette, S speed, O toggle bubbles, N new bubble, P pop them all, M toggle lines, E eruption now, B breakthrough now, T takeover now, R reset, H hide hint.
 
 In a browser the page cannot read `settings.json` from `file://`; edit the `DEFAULTS` block at the top of the script instead, or serve the folder over http (then `settings.json` next to the page is picked up).
 
@@ -60,4 +65,4 @@ In a browser the page cannot read `settings.json` from `file://`; edit the `DEFA
 * Requires the WebView2 Runtime. Built into Windows 11; on Windows 10 it comes with Edge/Office, or install the Evergreen bootstrapper.
 * If Windows starts the screensaver on the secure (Winlogon) desktop, i.e. the machine is already locked, WebView2 may refuse to start. The host then exits cleanly and logs to `%LOCALAPPDATA%\AcidFlow\AcidFlow.log`; Windows simply shows the lock screen.
 * A screen saver enforced by GPO/Intune under `HKCU\Software\Policies` overrides the per-user registration.
-* The current `.scr` (1.2.1) was built on Windows with `src\build.ps1` (csc.exe from .NET Framework 4.8).
+* The current `.scr` (1.3.1) was built on Windows with `src\build.ps1` (csc.exe from .NET Framework 4.8).
