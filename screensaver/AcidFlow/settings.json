@@ -1,0 +1,51 @@
+// AcidFlow settings. Comments and trailing commas are allowed.
+// Changes take effect the next time the screensaver starts.
+{
+  "fps": 30,                // frame rate cap, 10..60 (lower = less GPU/CPU)
+  "quality": 0.75,          // max render resolution, fraction of the screen, 0.35..1
+  "speed": 1.0,             // global time multiplier (0.25 = meditative, 2 = energetic)
+
+  "flow": 1.0,              // strength of the fluid motion
+  "swirl": 1.0,             // global rotation
+  "detail": 1.0,            // spatial scale (2 = smaller features, 0.5 = big soft blobs)
+  "warp": 1.0,              // how much the pattern folds over itself
+  "colorShift": 1.0,        // how fast hues drift through the palette
+  "saturation": 1.0,
+  "brightness": 1.0,
+  "vignette": 1.0,          // 0 = off
+
+  "paletteSeconds": 150,    // seconds each palette stays before morphing to the next
+  "morphSeconds": 40,       // cross-fade length
+
+  // Palettes to cycle through. [] = all built-in:
+  //   "Prism", "Lava lamp", "Deep sea", "Sunset", "Neon", "Aurora", "Ultraviolet", "Ember",
+  //   "Acid", "Miami", "Forest", "Mono ice"
+  // Mix names with your own: { "name": "Mine", "colors": ["#ff0066", "#ffe600", "#00ff99", "#0066ff"] }
+  // (2..16 hex colours, looped into a smooth gradient)
+  "palettes": [],
+
+  // Mystify-style line shapes that drift through the picture and bleed into the fluid
+  "mystify": {
+    "enabled": true,
+    "shapes": 2,            // number of polygons (1..8)
+    "points": 4,            // vertices per polygon (3..8)
+    "speed": 1.0,           // movement speed
+    "trail": 12,            // trailing copies (0 = none)
+    "trailSpacing": 3,      // frames between trailing copies
+    "lineWidth": 1.4,       // pixels at 1080p
+    "opacity": 0.35,        // crisp overlay opacity (0 = no overlay, only the ink in the fluid)
+    "ink": 1.0,             // how strongly the lines bleed into the fluid (0 = off)
+  },
+
+  // Eruptions: small drops of colour. A ripple pushes the fluid aside and a kaleidoscopic bloom is written over it.
+  // Breakthroughs fold the whole screen kaleidoscopically for a few seconds.
+  "eruptions": {
+    "enabled": true,
+    "everySeconds": 10,     // average seconds between eruptions (randomised 0.5x..1.5x)
+    "intensity": 1.0,       // size of the drop and strength of its ripple (0.2..3)
+    "duration": 6,          // seconds a bloom lives before the flow has dissolved it
+    "symmetry": 6,          // kaleidoscope folds in the bloom (0 = none, max 16)
+    "breakthroughEverySeconds": 240,  // whole-screen kaleidoscope (0 = off)
+    "breakthroughSeconds": 10,
+  },
+}

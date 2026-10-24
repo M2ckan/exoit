@@ -1,0 +1,950 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AcidFlow</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; position: absolute; inset: 0; width: 100vw; height: 100vh; }
+  #lines { pointer-events: none; }
+  body.idle { cursor: none; }
+  #hint {
+    position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
+    font: 13px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: rgba(255,255,255,0.75); background: rgba(0,0,0,0.45);
+    padding: 10px 18px; border-radius: 999px; letter-spacing: 0.02em;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    opacity: 1; transition: opacity 1.2s ease; pointer-events: none; white-space: nowrap;
+  }
+  #hint.hidden { opacity: 0; }
+  #hint b { color: #fff; font-weight: 600; }
+  #err {
+    position: fixed; inset: 0; display: none; place-items: center; color: #ddd;
+    font: 16px ui-sans-serif, system-ui, sans-serif; text-align: center; padding: 40px;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<canvas id="lines"></canvas>
+<div id="hint"><b>Click</b> fullscreen &nbsp;·&nbsp; <b>Space</b> pause &nbsp;·&nbsp; <b>1-9</b> palette &nbsp;·&nbsp; <b>A</b> auto &nbsp;·&nbsp; <b>S</b> speed &nbsp;·&nbsp; <b>M</b> lines &nbsp;·&nbsp; <b>E</b> erupt &nbsp;·&nbsp; <b>B</b> breakthrough &nbsp;·&nbsp; <b>R</b> reset &nbsp;·&nbsp; <b>H</b> hide</div>
+<div id="err">This screensaver needs WebGL2. Try Chrome, Edge or Firefox with hardware acceleration enabled.</div>
+
+<script id="vs" type="x-shader/x-vertex">#version 300 es
+precision highp float;
+const vec2 verts[3] = vec2[3](vec2(-1.0,-1.0), vec2(3.0,-1.0), vec2(-1.0,3.0));
+out vec2 vUv;
+void main() {
+  vec2 p = verts[gl_VertexID];
+  vUv = p * 0.5 + 0.5;
+  gl_Position = vec4(p, 0.0, 1.0);
+}
+</script>
+
+<script id="common" type="x-shader/x-common">
+// Gradient noise (Inigo Quilez style), smooth C2 interpolation
+vec2 hash2(vec2 p) {
+  p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+  return -1.0 + 2.0 * fract(sin(p) * 43758.5453123);
+}
+float gnoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  return mix(mix(dot(hash2(i + vec2(0.0, 0.0)), f - vec2(0.0, 0.0)),
+                 dot(hash2(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0)), u.x),
+             mix(dot(hash2(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0)),
+                 dot(hash2(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0)), u.x), u.y);
+}
+const mat2 ROT = mat2(0.80, 0.60, -0.60, 0.80);
+float fbm(vec2 p) {
+  float a = 0.5, s = 0.0;
+  for (int i = 0; i < 5; i++) {
+    s += a * gnoise(p);
+    p = ROT * p * 2.02 + vec2(1.7, 9.2);
+    a *= 0.5;
+  }
+  return s;
+}
+float fbm3(vec2 p) {
+  float a = 0.5, s = 0.0;
+  for (int i = 0; i < 3; i++) {
+    s += a * gnoise(p);
+    p = ROT * p * 2.03 + vec2(3.1, 2.7);
+    a *= 0.5;
+  }
+  return s;
+}
+</script>
+
+<script id="fs_sim" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 frag;
+
+uniform sampler2D uPrev;
+uniform sampler2D uPal0;     // current palette (1D gradient)
+uniform sampler2D uPal1;     // next palette
+uniform sampler2D uInk;      // Mystify lines rendered by the 2D canvas, injected into the flow
+uniform float uPalMix;
+uniform float uInkAmount;
+uniform vec2  uRes;
+uniform float uDt;
+uniform float uFrame;
+uniform vec2  uOff1;     // flow field drift (bounded, computed in JS)
+uniform vec2  uOff2;     // warp drift
+uniform vec2  uOff3;     // warp drift 2
+uniform float uHue;      // palette phase
+uniform float uFlow;     // advection strength
+uniform float uSwirl;    // global rotation
+uniform float uZoom;     // slow zoom in/out
+uniform float uInject;   // how fast fresh colour is written
+uniform float uScale;    // spatial scale of the pattern
+uniform float uWarp;     // domain warp intensity
+
+// eruptions: a shock wave pushes the fluid outward, then a kaleidoscopic bloom is written over it
+const int MAX_ERUPT = 6;
+uniform int   uEruptN;
+uniform vec4  uEruptA[MAX_ERUPT];   // centre (p-space), phase 0..1, strength
+uniform vec4  uEruptB[MAX_ERUPT];   // hue offset, ring radius, rotation, symmetry folds
+uniform float uEruptInject;         // how fast the bloom overwrites the fluid
+
+//COMMON//
+
+vec3 pal(float t) {
+  vec2 uv = vec2(t, 0.5);
+  return mix(texture(uPal0, uv).rgb, texture(uPal1, uv).rgb, uPalMix);
+}
+
+vec2 curl(vec2 p) {
+  const float e = 0.02;
+  float a = fbm3(p + vec2(0.0, e));
+  float b = fbm3(p - vec2(0.0, e));
+  float c = fbm3(p + vec2(e, 0.0));
+  float d = fbm3(p - vec2(e, 0.0));
+  return vec2(a - b, -(c - d)) / (2.0 * e);
+}
+
+void main() {
+  vec2 asp = vec2(uRes.x / uRes.y, 1.0);
+  vec2 p = (vUv - 0.5) * asp;
+
+  // ---- flow field: divergence-free curl noise + gentle global swirl
+  vec2 v = curl(p * 0.9 + uOff1) * uFlow;
+  v += vec2(-p.y, p.x) * uSwirl;
+  v += p * uZoom;
+
+  // ---- eruptions
+  vec3 bloom = vec3(0.0);
+  float bloomMask = 0.0;
+  float rim = 0.0;   // bubble membrane: a thin bright edge while it swells
+  for (int i = 0; i < MAX_ERUPT; i++) {
+    if (i >= uEruptN) break;
+    vec4 A = uEruptA[i], B = uEruptB[i];
+    vec2 d = p - A.xy;
+    float r = length(d);
+    float phase = A.z, str = max(A.w, 0.3), R = B.y;
+    if (r > R * 1.8 + 0.25) continue;
+    vec2 dir = d / max(r, 1e-4);
+    // 1) the drop swells from a point: a dome pushes the picture outward from underneath, no colour yet
+    float dome = sin(3.14159 * clamp(r / max(R, 1e-3), 0.0, 1.0));
+    float swell = (1.0 - smoothstep(0.0, 0.35, phase)) * str * 0.9;
+    v += dir * dome * swell;
+    rim = max(rim, exp(-pow((r - R) / (0.012 * str + 0.004), 2.0)) * smoothstep(0.0, 0.05, phase) * (1.0 - smoothstep(0.12, 0.22, phase)));
+    // 2) the plop: the surface gives and two or three ripples travel outward
+    float pop = smoothstep(0.12, 0.25, phase);
+    float wave = cos((r - R) * (90.0 / str)) * exp(-pow((r - R) / (0.05 * str + 0.015), 2.0));
+    v += dir * wave * pop * str * 1.4 * pow(1.0 - phase, 2.0);
+    // a twist around the core so the colour spirals while it dissolves
+    v += vec2(-dir.y, dir.x) * exp(-r * r / (R * R + 1e-3)) * str * 0.5 * pop * (1.0 - phase);
+    // kaleidoscopic mandala inside the ring
+    float rawAng = atan(d.y, d.x) + B.z;
+    float ang = rawAng;
+    if (B.w > 0.5) {
+      float seg = 6.2831853 / B.w;
+      ang = abs(mod(rawAng + seg * 0.5, seg) - seg * 0.5);
+    }
+    vec2 q2 = vec2(cos(ang), sin(ang)) * r;
+    float n = fbm3(q2 * (34.0 / str) + vec2(B.x * 3.0, phase * 2.0));
+    float rings = 0.5 + 0.5 * sin(r * (170.0 / str) - phase * 25.0 + n * 7.0);
+    float petals = 0.5 + 0.5 * cos(rawAng * max(B.w, 3.0) * 2.0 + r * 85.0 - phase * 8.0 + n * 4.0);
+    // dark gaps between the bright bands: a readable mandala instead of a pastel disc
+    float pattern = smoothstep(0.15, 0.85, rings) * (0.35 + 0.65 * smoothstep(0.2, 0.8, petals));
+    vec3 bc = pal(B.x + n * 1.6 + rings * 0.35 + r * 4.0 / str);
+    bc = pow(bc, vec3(0.75)) * (0.35 + 1.4 * pattern);
+    bc += vec3(1.0, 0.95, 0.85) * exp(-r * r / (0.00025 * str)) * pop * (1.0 - phase);   // bright core at the plop
+    // 3) colour wells up from the centre after the plop and is then carried away by the ripples
+    float Rb = R * 0.8 * smoothstep(0.1, 0.5, phase);
+    float inside = 1.0 - smoothstep(Rb * 0.7, Rb * 1.05, r);
+    float m = inside * pop * pow(1.0 - phase, 1.2);
+    bloom = mix(bloom, bc, m);
+    bloomMask = max(bloomMask, m);
+  }
+
+  vec2 suv = vUv - (v * uDt) / asp;
+  // slight blur kernel while sampling: keeps the field silky, prevents pixel crawl
+  vec2 px = 0.6 / uRes;
+  vec3 prev = texture(uPrev, suv).rgb * 0.68
+            + texture(uPrev, suv + vec2(px.x, 0.0)).rgb * 0.08
+            + texture(uPrev, suv - vec2(px.x, 0.0)).rgb * 0.08
+            + texture(uPrev, suv + vec2(0.0, px.y)).rgb * 0.08
+            + texture(uPrev, suv - vec2(0.0, px.y)).rgb * 0.08;
+
+  // ---- source: domain-warped fbm (iq), coloured by the palette gradient
+  vec2 q = p * uScale;
+  vec2 w1 = vec2(fbm(q + uOff2), fbm(q + uOff2 + vec2(5.2, 1.3)));
+  vec2 w2 = vec2(fbm(q + uWarp * w1 + uOff3 + vec2(1.7, 9.2)),
+                 fbm(q + uWarp * w1 + uOff3 + vec2(8.3, 2.8)));
+  float f = fbm(q + uWarp * w2);
+  float t = f * 1.7 + uHue + 0.45 * length(w2) + 0.2 * w1.x;
+  vec3 src = pal(t);
+  // depth: slow dark pools and bright folds so the image has real contrast, not pastel soup
+  float dark = smoothstep(-0.35, 0.40, fbm3(q * 0.55 + uOff1 * 0.7 + vec2(3.0, 7.0)));
+  src *= 0.15 + 0.95 * dark;
+  src *= 0.80 + 0.40 * smoothstep(0.25, 0.95, length(w2));
+
+  vec3 col = (uFrame < 1.5) ? src : mix(prev, src, uInject);
+
+  // ---- ink: the line shapes bleed into the fluid and get carried away by it
+  vec4 ink = texture(uInk, vec2(vUv.x, 1.0 - vUv.y));
+  col += ink.rgb * ink.a * uInkAmount;
+
+  // ---- eruption bloom overwrites the fluid, then gets carried away by it
+  col = mix(col, bloom, bloomMask * uEruptInject);
+  col = col * (1.0 + 0.9 * rim) + 0.10 * rim;
+
+  col = clamp(col, 0.0, 1.3);
+  frag = vec4(col, 1.0);
+}
+</script>
+
+<script id="fs_show" type="x-shader/x-fragment">#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 frag;
+uniform sampler2D uTex;
+uniform vec2  uRes;
+uniform float uTime;
+uniform float uSat;
+uniform float uGamma;
+uniform float uGain;
+uniform float uVignette;
+uniform float uPulse;     // 0..1 flash right after an eruption
+uniform float uKal;       // 0..1 whole-screen kaleidoscope (breakthrough)
+uniform float uKalSym;    // folds
+uniform float uKalRot;    // rotation of the fold
+
+float hash1(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+// chromatic bloom: sample neighbours with slight offset per channel; the spread widens during a pulse
+vec3 fetch(vec2 uv, float spread) {
+  vec3 col = texture(uTex, uv).rgb;
+  vec2 px = spread / uRes;
+  vec3 bl = vec3(
+    texture(uTex, uv + px * vec2( 1.0, 0.0)).r,
+    texture(uTex, uv + px * vec2(-0.5, 0.8)).g,
+    texture(uTex, uv + px * vec2(-0.5,-0.8)).b);
+  return mix(col, bl, 0.25 + 0.35 * uPulse);
+}
+
+void main() {
+  float spread = 1.5 + 10.0 * uPulse;
+  vec3 col = fetch(vUv, spread);
+
+  // breakthrough: fold the whole picture kaleidoscopically around the centre and cross-fade to it
+  if (uKal > 0.001) {
+    vec2 asp = vec2(uRes.x / uRes.y, 1.0);
+    vec2 d = (vUv - 0.5) * asp;
+    float r = length(d);
+    float seg = 6.2831853 / max(uKalSym, 2.0);
+    float ang = abs(mod(atan(d.y, d.x) + uKalRot + seg * 0.5, seg) - seg * 0.5);
+    r *= 1.0 + 0.12 * uKal * sin(r * 9.0 - uTime * 2.5);   // breathing zoom, folds pulse towards the viewer
+    vec2 kuv = vec2(cos(ang), sin(ang)) * r / asp + 0.5;
+    col = mix(col, fetch(kuv, spread), uKal);
+  }
+
+  // saturation
+  float l = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(vec3(l), col, uSat * (1.0 + 0.5 * uPulse));
+  col *= 1.0 + 0.4 * uPulse;
+
+  // contrast: deepen the darks, keep the highlights glowing
+  col = pow(max(col, 0.0), vec3(1.45)) * 1.25;
+  col = col / (col + 0.60) * 1.50;
+  col = pow(max(col, 0.0), vec3(uGamma)) * uGain;
+
+  // vignette
+  vec2 d = vUv - 0.5;
+  d.x *= uRes.x / uRes.y;
+  float vig = 1.0 - smoothstep(0.45, 1.35, length(d));
+  col *= mix(1.0, 0.45 + 0.55 * vig, uVignette);
+
+  // slow breathing
+  col *= 0.96 + 0.04 * sin(uTime * 0.21);
+
+  // dither against banding
+  col += (hash1(gl_FragCoord.xy + fract(uTime) * 17.0) - 0.5) / 255.0 * 2.0;
+
+  frag = vec4(col, 1.0);
+}
+</script>
+
+<script>
+function acidMain() {
+  'use strict';
+
+  // =====================================================================================
+  //  SETTINGS
+  //  Defaults live here. They are overridden, in this order, by:
+  //    1. window.ACID_SETTINGS_TEXT  (the .scr host injects the contents of settings.json)
+  //    2. a settings.json next to this file when served over http(s)
+  //    3. URL parameters: ?fps= ?scale= ?maxscale= ?speed= ?palette= ?hint=0 ?saver=1
+  //  settings.json may contain // comments and trailing commas.
+  // =====================================================================================
+  const DEFAULTS = {
+    fps: 30,                 // frame rate cap, 10..60
+    quality: 0.75,           // max render resolution as a fraction of the screen, 0.35..1
+    speed: 1.0,              // global time multiplier (0.25 = very slow, 2 = energetic)
+    flow: 1.0,               // strength of the fluid motion
+    swirl: 1.0,              // global rotation
+    detail: 1.0,             // spatial scale of the pattern (2 = smaller features)
+    warp: 1.0,               // how much the pattern folds over itself
+    colorShift: 1.0,         // how fast hues drift through the palette
+    saturation: 1.0,
+    brightness: 1.0,
+    vignette: 1.0,           // 0 = off
+    paletteSeconds: 150,     // time each palette stays before morphing to the next
+    morphSeconds: 40,        // cross-fade length
+    palettes: [],            // [] = all built-in. Or a list of names and/or {name, colors:[hex...]} objects.
+    mystify: {
+      enabled: true,
+      shapes: 2,             // number of polygons
+      points: 4,             // vertices per polygon
+      speed: 1.0,            // movement speed
+      trail: 12,             // trailing copies
+      trailSpacing: 3,       // frames between trailing copies
+      lineWidth: 1.4,        // pixels at 1080p
+      opacity: 0.35,         // crisp overlay opacity (0 = overlay off)
+      ink: 1.0,              // how strongly the lines bleed into the fluid (0 = off)
+    },
+    eruptions: {
+      enabled: true,
+      everySeconds: 5,      // average seconds between eruptions (randomised 0.5x..1.5x)
+      intensity: 1.0,        // size of the drop and strength of its ripple
+      duration: 6,           // seconds a bloom lives before the flow has dissolved it
+      symmetry: 6,           // kaleidoscope folds in the bloom (0 = none)
+      breakthroughEverySeconds: 240,  // whole-screen kaleidoscope (0 = off)
+      breakthroughSeconds: 10,
+    },
+  };
+
+  const BUILTIN_PALETTES = [
+    // cosine palettes: a + b*cos(2pi(c*t+d)), evaluated in JS into a gradient texture
+    { name: 'Prism',       a: [0.50, 0.50, 0.50], b: [0.50, 0.50, 0.50], c: [1.00, 1.00, 1.00], d: [0.00, 0.33, 0.67] },
+    { name: 'Lava lamp',   a: [0.55, 0.35, 0.45], b: [0.45, 0.40, 0.50], c: [1.00, 0.70, 0.40], d: [0.00, 0.15, 0.20] },
+    { name: 'Deep sea',    a: [0.20, 0.25, 0.50], b: [0.50, 0.45, 0.45], c: [1.00, 1.00, 0.80], d: [0.35, 0.55, 0.85] },
+    { name: 'Sunset',      a: [0.65, 0.40, 0.35], b: [0.45, 0.40, 0.45], c: [1.00, 0.80, 0.60], d: [0.80, 0.95, 0.25] },
+    { name: 'Neon',        a: [0.50, 0.50, 0.50], b: [0.50, 0.50, 0.50], c: [2.00, 1.00, 1.00], d: [0.50, 0.20, 0.25] },
+    { name: 'Aurora',      a: [0.25, 0.45, 0.40], b: [0.40, 0.45, 0.50], c: [1.20, 1.00, 0.80], d: [0.30, 0.55, 0.70] },
+    { name: 'Ultraviolet', a: [0.40, 0.20, 0.55], b: [0.55, 0.35, 0.45], c: [1.00, 1.20, 0.90], d: [0.65, 0.20, 0.60] },
+    { name: 'Ember',       a: [0.50, 0.30, 0.20], b: [0.50, 0.40, 0.30], c: [1.00, 1.00, 0.50], d: [0.00, 0.12, 0.30] },
+    // colour-stop palettes: a looping gradient through the listed colours
+    { name: 'Acid',        colors: ['#ff0066', '#ffe600', '#00ff99', '#0066ff', '#cc00ff'] },
+    { name: 'Miami',       colors: ['#ff6ec7', '#7a5cff', '#00e5ff', '#ffd166'] },
+    { name: 'Forest',      colors: ['#06281a', '#1f7a4d', '#b7e36a', '#f2ffb0', '#2f5d3a'] },
+    { name: 'Mono ice',    colors: ['#03060f', '#1b2a5e', '#5ab3ff', '#eaf7ff'] },
+  ];
+
+  // ---- settings loading ---------------------------------------------------------------
+  function stripJsonComments(text) {
+    let out = '', inStr = false, esc = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i], nx = text[i + 1];
+      if (inStr) { out += ch; if (esc) esc = false; else if (ch === '\\') esc = true; else if (ch === '"') inStr = false; continue; }
+      if (ch === '"') { inStr = true; out += ch; continue; }
+      if (ch === '/' && nx === '/') { while (i < text.length && text[i] !== '\n') i++; out += '\n'; continue; }
+      if (ch === '/' && nx === '*') { i += 2; while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++; i++; continue; }
+      out += ch;
+    }
+    return out.replace(/,\s*([}\]])/g, '$1');
+  }
+  function parseSettings(text) {
+    try { return JSON.parse(stripJsonComments(text)); }
+    catch (e) { console.error('settings.json is not valid JSON: ' + e.message); return null; }
+  }
+  function deepMerge(base, over) {
+    const out = Array.isArray(base) ? base.slice() : Object.assign({}, base);
+    if (!over || typeof over !== 'object') return out;
+    for (const k of Object.keys(over)) {
+      const v = over[k];
+      if (v && typeof v === 'object' && !Array.isArray(v) && base[k] && typeof base[k] === 'object' && !Array.isArray(base[k])) out[k] = deepMerge(base[k], v);
+      else if (v !== undefined && v !== null) out[k] = v;
+    }
+    return out;
+  }
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  const num = (v, def) => (typeof v === 'number' && Number.isFinite(v)) ? v : def;
+
+  let S = DEFAULTS;
+  if (typeof window.ACID_SETTINGS_TEXT === 'string') {
+    const parsed = parseSettings(window.ACID_SETTINGS_TEXT);
+    if (parsed) S = deepMerge(DEFAULTS, parsed);
+  }
+
+  const canvas = document.getElementById('c');
+  const linesCanvas = document.getElementById('lines');
+  const hint = document.getElementById('hint');
+  const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: false });
+  if (!gl) { document.getElementById('err').style.display = 'grid'; return; }
+
+  // ---- float render targets when possible (no banding over long runs)
+  const extHalf = gl.getExtension('EXT_color_buffer_half_float');
+  const extFloat = gl.getExtension('EXT_color_buffer_float');
+  const texLinearFloat = gl.getExtension('OES_texture_float_linear');
+  let texInternal, texType;
+  if (extFloat && texLinearFloat) { texInternal = gl.RGBA16F; texType = gl.HALF_FLOAT; }
+  else if (extHalf) { texInternal = gl.RGBA16F; texType = gl.HALF_FLOAT; }
+  else { texInternal = gl.RGBA8; texType = gl.UNSIGNED_BYTE; }
+
+  // ---- shaders
+  const src = id => document.getElementById(id).textContent;
+  const common = src('common');
+  function compile(type, source) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, source);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error('Shader compile error: ' + gl.getShaderInfoLog(s));
+    return s;
+  }
+  function program(fsId) {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, src('vs')));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, src(fsId).replace('//COMMON//', common)));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error('Program link error: ' + gl.getProgramInfoLog(p));
+    const u = {};
+    const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+    for (let i = 0; i < n; i++) { const info = gl.getActiveUniform(p, i); u[info.name.replace(/\[0\]$/, '')] = gl.getUniformLocation(p, info.name); }
+    return { p, u };
+  }
+  let simProg, showProg;
+  try { simProg = program('fs_sim'); showProg = program('fs_show'); }
+  catch (e) { console.error(e); document.getElementById('err').textContent = e.message; document.getElementById('err').style.display = 'grid'; return; }
+
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+
+  // ---- render targets (ping-pong)
+  let targets = [];
+  let simW = 0, simH = 0;
+  function makeTarget(w, h) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, texInternal, w, h, 0, gl.RGBA, texType, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { tex, fbo, ok };
+  }
+  function destroyTarget(t) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); }
+
+  // ---- state
+  const state = {
+    renderScale: Math.min(0.6, clamp(num(S.quality, 0.75), 0.35, 1)),
+    maxScale: clamp(num(S.quality, 0.75), 0.35, 1),
+    fpsCap: clamp(Math.round(num(S.fps, 30)), 10, 60),
+    lastRender: 0,
+    pendingDt: 0,
+    paused: false,
+    autoPalette: true,
+    paletteIndex: 0,
+    speed: clamp(num(S.speed, 1), 0.05, 8),
+    linesOn: !!S.mystify.enabled,
+    frame: 0,
+    simTime: 0,
+    lastNow: performance.now(),
+    frameTimes: [],
+    lastAdapt: performance.now(),
+    fx: { n: 0, pulse: 0, kal: 0, kalSym: 6, kalRot: 0 },
+  };
+
+  // ---- palettes -> 1D gradient textures ----------------------------------------------
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const smooth = t => t * t * (3 - 2 * t);
+  function hexToRgb(h) {
+    const m = /^#?([0-9a-f]{6})$/i.exec(String(h).trim());
+    if (!m) return null;
+    const v = parseInt(m[1], 16);
+    return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
+  }
+  function samplePalette(def, t) {
+    t = t - Math.floor(t);
+    if (def.colors) {
+      const n = def.colors.length;
+      const x = t * n, i = Math.floor(x), f = smooth(x - i);
+      const c0 = def.colors[i % n], c1 = def.colors[(i + 1) % n];
+      return [lerp(c0[0], c1[0], f), lerp(c0[1], c1[1], f), lerp(c0[2], c1[2], f)];
+    }
+    const out = [];
+    for (let k = 0; k < 3; k++) out.push(def.a[k] + def.b[k] * Math.cos(6.28318 * (def.c[k] * t + def.d[k])));
+    return out;
+  }
+  function resolvePalettes() {
+    const list = [];
+    const wanted = Array.isArray(S.palettes) && S.palettes.length ? S.palettes : BUILTIN_PALETTES;
+    for (const item of wanted) {
+      let def = null;
+      if (typeof item === 'string') def = BUILTIN_PALETTES.find(p => p.name.toLowerCase() === item.toLowerCase());
+      else if (item && Array.isArray(item.colors)) {
+        const cols = item.colors.map(hexToRgb).filter(Boolean);
+        if (cols.length >= 2) def = { name: item.name || 'Custom', colors: cols };
+      }
+      else if (item && item.a && item.b && item.c && item.d) def = item;
+      if (def) list.push(def); else console.warn('Unknown palette entry ignored:', item);
+    }
+    if (!list.length) list.push(...BUILTIN_PALETTES);
+    return list.map(def => def.colors && typeof def.colors[0] === 'string'
+      ? { name: def.name, colors: def.colors.map(hexToRgb) } : def);
+  }
+  const PALETTES = resolvePalettes();
+  const PAL_W = 256;
+  function makePaletteTexture(def) {
+    const data = new Uint8Array(PAL_W * 4);
+    const table = new Float32Array(PAL_W * 3);
+    for (let i = 0; i < PAL_W; i++) {
+      const c = samplePalette(def, i / PAL_W);
+      for (let k = 0; k < 3; k++) { const v = clamp(c[k], 0, 1); table[i * 3 + k] = v; data[i * 4 + k] = Math.round(v * 255); }
+      data[i * 4 + 3] = 255;
+    }
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, PAL_W, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return { tex, table };
+  }
+  const palTex = PALETTES.map(makePaletteTexture);
+  const PALETTE_PERIOD = clamp(num(S.paletteSeconds, 150), 10, 36000);
+  const MORPH_TIME = clamp(num(S.morphSeconds, 40), 1, PALETTE_PERIOD);
+  function currentPalette(simT) {
+    if (!state.autoPalette || PALETTES.length === 1) { const i = state.paletteIndex % PALETTES.length; return { i0: i, i1: i, f: 0 }; }
+    const cyc = Math.max(0, simT) / PALETTE_PERIOD;
+    const i0 = Math.floor(cyc) % PALETTES.length;
+    const i1 = (i0 + 1) % PALETTES.length;
+    const local = (cyc - Math.floor(cyc)) * PALETTE_PERIOD;
+    const f = smooth(clamp((local - (PALETTE_PERIOD - MORPH_TIME)) / MORPH_TIME, 0, 1));
+    return { i0, i1, f };
+  }
+  function paletteColor(P, t) {
+    // blended palette lookup in JS (for the line shapes)
+    t = t - Math.floor(t);
+    const i = Math.floor(t * PAL_W) % PAL_W;
+    const A = palTex[P.i0].table, B = palTex[P.i1].table;
+    return [lerp(A[i * 3], B[i * 3], P.f), lerp(A[i * 3 + 1], B[i * 3 + 1], P.f), lerp(A[i * 3 + 2], B[i * 3 + 2], P.f)];
+  }
+
+  // ---- slow, bounded modulation: sums of incommensurate sines, never repeats, never drifts
+  const K = {
+    flow: clamp(num(S.flow, 1), 0, 4), swirl: clamp(num(S.swirl, 1), 0, 4), detail: clamp(num(S.detail, 1), 0.3, 4),
+    warp: clamp(num(S.warp, 1), 0, 3), colorShift: clamp(num(S.colorShift, 1), 0, 10),
+    sat: clamp(num(S.saturation, 1), 0, 3), gain: clamp(num(S.brightness, 1), 0.2, 3), vignette: clamp(num(S.vignette, 1), 0, 1),
+  };
+  function mod(simT) {
+    const s = Math.sin, c = Math.cos;
+    const T = simT;
+    return {
+      off1: [ 0.9 * s(T * 0.0110) + 0.45 * s(T * 0.0041 + 1.3),   0.9 * c(T * 0.0093) + 0.45 * c(T * 0.0037 + 0.4) ],
+      off2: [ 0.6 * s(T * 0.0071 + 2.1) + 0.30 * c(T * 0.0023), 0.6 * c(T * 0.0066) + 0.30 * s(T * 0.0029 + 0.9) ],
+      off3: [ 0.5 * c(T * 0.0052 + 0.7) + 0.25 * s(T * 0.0017), 0.5 * s(T * 0.0049 + 1.9) + 0.25 * c(T * 0.0019) ],
+      hue:  (T * 0.0085 + 0.15 * s(T * 0.05)) * K.colorShift,
+      flow:  (0.16 + 0.08 * s(T * 0.0170 + 0.5) + 0.04 * s(T * 0.0460)) * K.flow,
+      swirl: (0.05 * s(T * 0.0130) + 0.025 * s(T * 0.0310 + 2.0)) * K.swirl,
+      zoom:  0.035 * s(T * 0.0095 + 1.0),
+      inject: 0.035 + 0.015 * s(T * 0.0210 + 0.3),
+      scale: (1.9 + 0.6 * s(T * 0.0061 + 0.2)) * K.detail,
+      warp:  (2.2 + 1.0 * s(T * 0.0120 + 1.7)) * K.warp,
+      sat:   (1.55 + 0.2 * s(T * 0.0190)) * K.sat,
+    };
+  }
+
+  // ---- eruptions and breakthroughs ------------------------------------------------------
+  const E = {
+    enabled: !!S.eruptions.enabled,
+    every: clamp(num(S.eruptions.everySeconds, 25), 2, 3600),
+    intensity: clamp(num(S.eruptions.intensity, 1), 0.2, 3),
+    duration: clamp(num(S.eruptions.duration, 6), 1, 60),
+    symmetry: clamp(Math.round(num(S.eruptions.symmetry, 6)), 0, 16),
+    btEvery: clamp(num(S.eruptions.breakthroughEverySeconds, 240), 0, 36000),
+    btSeconds: clamp(num(S.eruptions.breakthroughSeconds, 10), 2, 120),
+  };
+  const MAX_ERUPT = 6;
+  const eruptions = [];
+  const eruptA = new Float32Array(MAX_ERUPT * 4), eruptB = new Float32Array(MAX_ERUPT * 4);
+  let nextEruption = E.enabled ? 3 : Infinity;
+  let nextBreakthrough = (E.enabled && E.btEvery > 0) ? E.btEvery * rnd(0.5, 1.0) : Infinity;
+  let breakthrough = null;
+
+  function spawnEruption() {
+    if (eruptions.length >= MAX_ERUPT) eruptions.shift();
+    eruptions.push({
+      x: 0.5, y: 0.5,
+      t0: state.simTime, dur: E.duration * rnd(0.8, 1.25),
+      strength: E.intensity * rnd(0.7, 1.3),
+      hue: Math.random(), rot0: rnd(0, 6.283), rotSpeed: rnd(0.6, 1.6) * (Math.random() < 0.5 ? -1 : 1),
+      sym: E.symmetry === 0 ? 0 : clamp(E.symmetry + (Math.random() < 0.3 ? 2 : 0), 3, 16),
+    });
+  }
+  function startBreakthrough() {
+    breakthrough = {
+      t0: state.simTime, dur: E.btSeconds, sym: [4, 5, 6, 8][Math.floor(Math.random() * 4)],
+      rot0: rnd(0, 6.283), rotSpeed: rnd(0.15, 0.35) * (Math.random() < 0.5 ? -1 : 1),
+    };
+  }
+  function updateEruptions() {
+    const T = state.simTime;
+    if (T >= nextEruption) { spawnEruption(); nextEruption = T + E.every * rnd(0.5, 1.5); }
+    if (T >= nextBreakthrough) { startBreakthrough(); nextBreakthrough = T + E.btEvery * rnd(0.7, 1.3); }
+    for (let i = eruptions.length - 1; i >= 0; i--) if (T - eruptions[i].t0 > eruptions[i].dur) eruptions.splice(i, 1);
+    if (breakthrough && T - breakthrough.t0 > breakthrough.dur) breakthrough = null;
+    const aspect = simW / Math.max(1, simH);
+    let pulse = 0;
+    for (let i = 0; i < eruptions.length; i++) {
+      const e = eruptions[i], age = T - e.t0, phase = clamp(age / e.dur, 0, 1);
+      const R = 0.11 * e.strength * (1 - Math.exp(-3 * phase)) / (1 - Math.exp(-3));
+      eruptA[i * 4] = (e.x - 0.5) * aspect; eruptA[i * 4 + 1] = e.y - 0.5;
+      eruptA[i * 4 + 2] = phase; eruptA[i * 4 + 3] = e.strength;
+      eruptB[i * 4] = e.hue; eruptB[i * 4 + 1] = R;
+      eruptB[i * 4 + 2] = e.rot0 + e.rotSpeed * age; eruptB[i * 4 + 3] = e.sym;
+      const popAt = 0.18 * e.dur;   // the flash belongs to the plop, not to the first swelling
+      pulse = Math.max(pulse, 0.3 * e.strength * smooth(clamp(age / popAt, 0, 1)) * Math.exp(-Math.max(0, age - popAt) * 3));
+    }
+    const fx = state.fx;
+    fx.n = eruptions.length; fx.pulse = clamp(pulse, 0, 1);
+    fx.kal = 0;
+    if (breakthrough) {
+      const age = T - breakthrough.t0;
+      fx.kal = smooth(clamp(age / 2.5, 0, 1)) * smooth(clamp((breakthrough.dur - age) / 3.5, 0, 1));
+      fx.kalSym = breakthrough.sym; fx.kalRot = breakthrough.rot0 + breakthrough.rotSpeed * age;
+    }
+  }
+
+  // ---- Mystify-style line shapes ---------------------------------------------------------
+  const M = {
+    shapes: clamp(Math.round(num(S.mystify.shapes, 2)), 1, 8),
+    points: clamp(Math.round(num(S.mystify.points, 4)), 3, 8),
+    speed: clamp(num(S.mystify.speed, 1), 0, 5),
+    trail: clamp(Math.round(num(S.mystify.trail, 12)), 0, 60),
+    spacing: clamp(Math.round(num(S.mystify.trailSpacing, 3)), 1, 10),
+    width: clamp(num(S.mystify.lineWidth, 1.4), 0.3, 12),
+    opacity: clamp(num(S.mystify.opacity, 0.35), 0, 1),
+    ink: clamp(num(S.mystify.ink, 1.0), 0, 3),
+  };
+  const shapes = [];
+  function rnd(a, b) { return a + Math.random() * (b - a); }
+  for (let i = 0; i < M.shapes; i++) {
+    const pts = [];
+    for (let j = 0; j < M.points; j++) {
+      const ang = rnd(0, Math.PI * 2), sp = rnd(0.05, 0.09);
+      pts.push({ x: rnd(0.1, 0.9), y: rnd(0.1, 0.9), vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp });
+    }
+    shapes.push({ pts, history: [], hue: i / M.shapes, hueDrift: rnd(0.004, 0.009) * (i % 2 ? 1 : -1), frameCount: 0 });
+  }
+  const inkCanvas = document.createElement('canvas');
+  const inkCtx = inkCanvas.getContext('2d');
+  const linesCtx = linesCanvas.getContext('2d');
+  const inkTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, inkTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  let inkDirty = true;
+
+  function stepShapes(dt, P) {
+    const aspect = canvas.width / Math.max(1, canvas.height);
+    for (const sh of shapes) {
+      // velocities live in "height units" per second; x bounces at the aspect-corrected edge
+      for (const p of sh.pts) {
+        p.x += p.vx * dt * M.speed / aspect;
+        p.y += p.vy * dt * M.speed;
+        if (p.x < 0) { p.x = -p.x; p.vx = Math.abs(p.vx); }
+        if (p.x > 1) { p.x = 2 - p.x; p.vx = -Math.abs(p.vx); }
+        if (p.y < 0) { p.y = -p.y; p.vy = Math.abs(p.vy); }
+        if (p.y > 1) { p.y = 2 - p.y; p.vy = -Math.abs(p.vy); }
+      }
+      sh.hue += sh.hueDrift * dt;
+      if (++sh.frameCount % M.spacing === 0) {
+        sh.history.unshift(sh.pts.map(p => [p.x, p.y]));
+        if (sh.history.length > M.trail) sh.history.length = M.trail;
+      }
+    }
+  }
+  function drawShapes(ctx, w, h, alphaScale, widthScale, P) {
+    ctx.clearRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = Math.max(0.5, M.width * (h / 1080) * widthScale);
+    for (const sh of shapes) {
+      const poly = (pts, alpha, hueOff) => {
+        const c = paletteColor(P, sh.hue + hueOff);
+        ctx.strokeStyle = 'rgba(' + Math.round(c[0] * 255) + ',' + Math.round(c[1] * 255) + ',' + Math.round(c[2] * 255) + ',' + alpha.toFixed(3) + ')';
+        ctx.beginPath();
+        for (let i = 0; i < pts.length; i++) { const x = pts[i][0] * w, y = pts[i][1] * h; if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }
+        ctx.closePath();
+        ctx.stroke();
+      };
+      for (let i = sh.history.length - 1; i >= 0; i--) {
+        const a = (1 - (i + 1) / (M.trail + 1));
+        poly(sh.history[i], alphaScale * a * a * 0.9, i * 0.012);
+      }
+      poly(sh.pts.map(p => [p.x, p.y]), alphaScale, 0);
+    }
+  }
+  function renderLines(P) {
+    const on = state.linesOn && M.shapes > 0;
+    if (M.opacity > 0 && on) {
+      if (linesCanvas.width !== canvas.width || linesCanvas.height !== canvas.height) { linesCanvas.width = canvas.width; linesCanvas.height = canvas.height; }
+      linesCanvas.style.display = '';
+      drawShapes(linesCtx, linesCanvas.width, linesCanvas.height, M.opacity, 1, P);
+    } else if (linesCanvas.style.display !== 'none') {
+      linesCanvas.style.display = 'none';
+    }
+    if (M.ink > 0 && on) {
+      const iw = Math.max(64, Math.round(simW * 0.5)), ih = Math.max(64, Math.round(simH * 0.5));
+      if (inkCanvas.width !== iw || inkCanvas.height !== ih) { inkCanvas.width = iw; inkCanvas.height = ih; }
+      drawShapes(inkCtx, iw, ih, 1.0, 2.2, P);
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, inkTex);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, inkCanvas);
+      inkDirty = false;
+    } else if (!inkDirty) {
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, inkTex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+      inkDirty = true;
+    }
+  }
+
+  // ---- resizing
+  function resize(force) {
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+    const cw = Math.max(1, Math.floor(canvas.clientWidth * dpr));
+    const ch = Math.max(1, Math.floor(canvas.clientHeight * dpr));
+    if (canvas.width !== cw || canvas.height !== ch) { canvas.width = cw; canvas.height = ch; }
+    const w = Math.max(64, Math.floor(cw * state.renderScale));
+    const h = Math.max(64, Math.floor(ch * state.renderScale));
+    if (!force && w === simW && h === simH) return;
+    const old = targets;
+    targets = [makeTarget(w, h), makeTarget(w, h)];
+    if (!targets[0].ok) {
+      targets.forEach(destroyTarget);
+      texInternal = gl.RGBA8; texType = gl.UNSIGNED_BYTE;
+      targets = [makeTarget(w, h), makeTarget(w, h)];
+    }
+    simW = w; simH = h;
+    if (old.length) {
+      // carry the existing picture over into the new resolution (no visual reset)
+      step(0, old[0].tex, targets[0], true);
+      old.forEach(destroyTarget);
+    } else {
+      state.frame = 0;
+    }
+  }
+
+  // ---- one simulation step: read from prevTex, write to dst
+  function step(dt, prevTex, dst, carryOnly) {
+    const m = mod(state.simTime);
+    const P = currentPalette(state.simTime);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst.fbo);
+    gl.viewport(0, 0, simW, simH);
+    gl.useProgram(simProg.p);
+    const u = simProg.u;
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, prevTex);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, palTex[P.i0].tex);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, palTex[P.i1].tex);
+    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, inkTex);
+    gl.uniform1i(u.uPrev, 0);
+    gl.uniform1i(u.uPal0, 1);
+    gl.uniform1i(u.uPal1, 2);
+    gl.uniform1i(u.uInk, 3);
+    gl.uniform1f(u.uPalMix, P.f);
+    gl.uniform1f(u.uInkAmount, carryOnly ? 0.0 : 0.03 * M.ink);
+    gl.uniform2f(u.uRes, simW, simH);
+    gl.uniform1f(u.uDt, dt);
+    gl.uniform1f(u.uFrame, carryOnly ? 10 : state.frame);
+    gl.uniform2f(u.uOff1, m.off1[0], m.off1[1]);
+    gl.uniform2f(u.uOff2, m.off2[0], m.off2[1]);
+    gl.uniform2f(u.uOff3, m.off3[0], m.off3[1]);
+    gl.uniform1f(u.uHue, m.hue);
+    gl.uniform1f(u.uFlow, m.flow);
+    gl.uniform1f(u.uSwirl, m.swirl);
+    gl.uniform1f(u.uZoom, m.zoom);
+    gl.uniform1f(u.uInject, carryOnly ? 0.0 : m.inject);
+    gl.uniform1f(u.uScale, m.scale);
+    gl.uniform1f(u.uWarp, m.warp);
+    gl.uniform1i(u.uEruptN, carryOnly ? 0 : state.fx.n);
+    gl.uniform4fv(u.uEruptA, eruptA);
+    gl.uniform4fv(u.uEruptB, eruptB);
+    gl.uniform1f(u.uEruptInject, 0.3);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  function present(tex) {
+    const m = mod(state.simTime);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.useProgram(showProg.p);
+    const u = showProg.u;
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(u.uTex, 0);
+    gl.uniform2f(u.uRes, canvas.width, canvas.height);
+    gl.uniform1f(u.uTime, state.simTime);
+    gl.uniform1f(u.uSat, m.sat);
+    gl.uniform1f(u.uGamma, 0.95);
+    gl.uniform1f(u.uGain, K.gain);
+    gl.uniform1f(u.uVignette, K.vignette);
+    gl.uniform1f(u.uPulse, state.fx.pulse);
+    gl.uniform1f(u.uKal, state.fx.kal);
+    gl.uniform1f(u.uKalSym, state.fx.kalSym);
+    gl.uniform1f(u.uKalRot, state.fx.kalRot);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // ---- adaptive quality: aim for a steady frame rate rather than max resolution
+  function adapt(now, frameMs) {
+    state.frameTimes.push(frameMs);
+    if (state.frameTimes.length > 90) state.frameTimes.shift();
+    if (now - state.lastAdapt < 3000 || state.frameTimes.length < 60) return;
+    const sorted = [...state.frameTimes].sort((a, b) => a - b);
+    const p75 = sorted[Math.floor(sorted.length * 0.75)];
+    const budget = Math.max(1000 / state.fpsCap, 16.7);
+    let s = state.renderScale;
+    if (p75 > budget * 1.3 && s > 0.35) s = Math.max(0.35, s - 0.1);
+    else if (p75 < budget * 1.08 && s < state.maxScale) s = Math.min(state.maxScale, s + 0.05);
+    if (s !== state.renderScale) { state.renderScale = s; resize(false); }
+    state.lastAdapt = now;
+    state.frameTimes.length = 0;
+  }
+
+  // ---- main loop
+  function frame(now) {
+    requestAnimationFrame(frame);
+    let rawDt = (now - state.lastNow) / 1000;
+    if (!Number.isFinite(rawDt) || rawDt < 0) rawDt = 0;
+    state.lastNow = now;
+    if (document.hidden) return;
+    // frame rate cap: skip this vsync if we are ahead of schedule
+    if (state.fpsCap < 60) {
+      const interval = 1000 / state.fpsCap;
+      if (now - state.lastRender < interval - 2) { state.pendingDt += rawDt; return; }
+      rawDt += state.pendingDt; state.pendingDt = 0;
+    }
+    state.lastRender = now;
+    resize(false);
+    if (!state.paused) {
+      // clamp dt: a tab that was throttled must not lurch forward
+      const dt = Math.min(rawDt, 1 / 20) * state.speed;
+      state.simTime += dt;
+      const P = currentPalette(state.simTime);
+      updateEruptions();
+      stepShapes(dt, P);
+      renderLines(P);
+      step(dt, targets[0].tex, targets[1], false);
+      targets.reverse();
+      state.frame++;
+    }
+    present(targets[0].tex);
+    adapt(now, rawDt * 1000);
+  }
+
+  function setPaused(v) { state.paused = !!v; }
+  window.__acidPause = setPaused;
+
+  // ---- UI: fullscreen, keys, cursor hiding
+  let hintTimer = 0, idleTimer = 0;
+  function showHint(ms) {
+    hint.classList.remove('hidden');
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => hint.classList.add('hidden'), ms);
+  }
+  function wake() {
+    document.body.classList.remove('idle');
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => document.body.classList.add('idle'), 2500);
+  }
+  function toggleFullscreen() {
+    const el = document.documentElement;
+    if (!document.fullscreenElement) (el.requestFullscreen || el.webkitRequestFullscreen).call(el).catch(() => {});
+    else document.exitFullscreen();
+  }
+  canvas.addEventListener('click', toggleFullscreen);
+  canvas.addEventListener('dblclick', e => e.preventDefault());
+  window.addEventListener('mousemove', () => { wake(); });
+  window.addEventListener('keydown', e => {
+    wake();
+    const k = e.key.toLowerCase();
+    if (k === ' ') { state.paused = !state.paused; e.preventDefault(); }
+    else if (k === 'f') toggleFullscreen();
+    else if (k === 'a') { state.autoPalette = true; showHint(2500); }
+    else if (k === 's') { state.speed = state.speed >= 2 ? 0.5 : state.speed * 2; showHint(2500); }
+    else if (k === 'm') { state.linesOn = !state.linesOn; }
+    else if (k === 'e') { spawnEruption(); }
+    else if (k === 'b') { startBreakthrough(); }
+    else if (k === 'r') { state.frame = 0; }
+    else if (k === 'h') { hint.classList.toggle('hidden'); clearTimeout(hintTimer); }
+    else if (k >= '1' && k <= '9') { state.autoPalette = false; state.paletteIndex = (parseInt(k, 10) - 1) % PALETTES.length; }
+  });
+  window.addEventListener('resize', () => resize(false));
+  document.addEventListener('visibilitychange', () => { state.lastNow = performance.now(); });
+  gl.canvas.addEventListener('webglcontextlost', e => { e.preventDefault(); });
+  gl.canvas.addEventListener('webglcontextrestored', () => { location.reload(); });
+
+  async function keepAwake() {
+    try { if ('wakeLock' in navigator && !document.hidden) await navigator.wakeLock.request('screen'); } catch (_) {}
+  }
+
+  // ---- URL parameters (override the settings file)
+  const qs = new URLSearchParams(location.search);
+  const saverMode = qs.get('saver') === '1';
+  if (!saverMode) { document.addEventListener('visibilitychange', keepAwake); keepAwake(); }
+  if (qs.has('fps')) state.fpsCap = clamp(parseInt(qs.get('fps'), 10) || 60, 10, 60);
+  if (qs.has('maxscale')) state.maxScale = clamp(parseFloat(qs.get('maxscale')) || 1, 0.35, 1);
+  if (qs.has('speed')) state.speed = clamp(parseFloat(qs.get('speed')) || 1, 0.05, 8);
+  if (qs.has('scale')) state.renderScale = clamp(parseFloat(qs.get('scale')) || 0.75, 0.25, 1);
+  state.renderScale = Math.min(state.renderScale, state.maxScale);
+  if (qs.has('palette')) { state.autoPalette = false; state.paletteIndex = clamp((parseInt(qs.get('palette'), 10) || 1) - 1, 0, PALETTES.length - 1); }
+  if (qs.get('hint') === '0' || saverMode) hint.style.display = 'none';
+  window.__acid = state;
+  window.__acidSettings = S;
+
+  resize(true);
+  showHint(6000);
+  wake();
+  requestAnimationFrame(frame);
+}
+
+// Bootstrap: when served over http(s), try settings.json next to the page first
+// (file:// pages cannot read sibling files; the .scr host injects window.ACID_SETTINGS_TEXT instead).
+if (typeof window.ACID_SETTINGS_TEXT !== 'string' && /^https?:$/.test(location.protocol)) {
+  fetch('settings.json', { cache: 'no-store' })
+    .then(r => r.ok ? r.text() : null)
+    .then(text => { if (text) window.ACID_SETTINGS_TEXT = text; acidMain(); })
+    .catch(acidMain);
+} else {
+  acidMain();
+}
+</script>
+</body>
+</html>
