@@ -259,6 +259,8 @@ function Find-Hit {
                 if ($name -eq 'IPv4') {
                     if (-not (Test-IPv4Octets $value)) { continue }
                     if (Test-ExemptIPv4 $value) { continue }
+                    # A four part version right after "Version(", "Version =" or "Version:" is not an address.
+                    if ($line.Substring(0, $match.Index) -match '(?i)version\w*\s*[(=:]\s*[''"]?\s*$') { continue }
                     if (Test-InNetwork -Address $value -Networks $Denylist.Networks) { $name = 'Denylist.Network' }
                 }
                 if (Test-Allowed -Value $value -Allow (@($Denylist.Allow) + $script:BuiltInAllow)) { continue }
