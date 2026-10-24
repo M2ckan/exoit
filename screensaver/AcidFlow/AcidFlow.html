@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AcidFlow</title>
+<!-- forged at 800° -->
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
   canvas { display: block; position: absolute; inset: 0; width: 100vw; height: 100vh; }
@@ -623,6 +624,9 @@ function acidMain() {
       ? { name: def.name, colors: def.colors.map(hexToRgb) } : def);
   }
   const PALETTES = resolvePalettes();
+  const N_PUBLIC = PALETTES.length;          // the palettes that cycle and that 1-9 reach
+  // one more that nothing lists: iron at 800 degrees, black through cherry red to straw. Type 8 0 0.
+  PALETTES.push({ name: '800°', a: [0.42, 0.16, 0.04], b: [0.52, 0.30, 0.12], c: [1.00, 1.00, 0.90], d: [0.00, 0.10, 0.22] });
   const PAL_W = 256;
   function makePaletteTexture(def) {
     const data = new Uint8Array(PAL_W * 4);
@@ -645,10 +649,10 @@ function acidMain() {
   const PALETTE_PERIOD = clamp(num(S.paletteSeconds, 150), 10, 36000);
   const MORPH_TIME = clamp(num(S.morphSeconds, 40), 1, PALETTE_PERIOD);
   function currentPalette(simT) {
-    if (!state.autoPalette || PALETTES.length === 1) { const i = state.paletteIndex % PALETTES.length; return { i0: i, i1: i, f: 0 }; }
+    if (!state.autoPalette || N_PUBLIC === 1) { const i = state.paletteIndex % PALETTES.length; return { i0: i, i1: i, f: 0 }; }
     const cyc = Math.max(0, simT + state.palOffset) / PALETTE_PERIOD;
-    const i0 = Math.floor(cyc) % PALETTES.length;
-    const i1 = (i0 + 1) % PALETTES.length;
+    const i0 = Math.floor(cyc) % N_PUBLIC;
+    const i1 = (i0 + 1) % N_PUBLIC;
     const local = (cyc - Math.floor(cyc)) * PALETTE_PERIOD;
     const f = smooth(clamp((local - (PALETTE_PERIOD - MORPH_TIME)) / MORPH_TIME, 0, 1));
     return { i0, i1, f };
@@ -707,8 +711,8 @@ function acidMain() {
 
   // the next palette starts now, in full: a takeover drop carries it across the picture
   function jumpPalette() {
-    if (PALETTES.length === 1) return;
-    if (!state.autoPalette) { state.paletteIndex = (state.paletteIndex + 1) % PALETTES.length; return; }
+    if (N_PUBLIC === 1) return;
+    if (!state.autoPalette) { state.paletteIndex = (state.paletteIndex + 1) % N_PUBLIC; return; }
     const cyc = Math.max(0, state.simTime + state.palOffset) / PALETTE_PERIOD;
     state.palOffset = (Math.floor(cyc) + 1) * PALETTE_PERIOD - state.simTime;
   }
@@ -1090,7 +1094,7 @@ function acidMain() {
   window.__acidPause = setPaused;
 
   // ---- UI: fullscreen, keys, cursor hiding
-  let hintTimer = 0, idleTimer = 0;
+  let hintTimer = 0, idleTimer = 0, keySeq = '';
   function showHint(ms) {
     hint.classList.remove('hidden');
     clearTimeout(hintTimer);
@@ -1112,6 +1116,8 @@ function acidMain() {
   window.addEventListener('keydown', e => {
     wake();
     const k = e.key.toLowerCase();
+    keySeq = (keySeq + k).slice(-3);
+    if (keySeq === '800') { state.autoPalette = false; state.paletteIndex = N_PUBLIC; keySeq = ''; return; }
     if (k === ' ') { state.paused = !state.paused; e.preventDefault(); }
     else if (k === 'f') toggleFullscreen();
     else if (k === 'a') { state.autoPalette = true; showHint(2500); }
@@ -1125,7 +1131,7 @@ function acidMain() {
     else if (k === 't') { spawnEruption(true); }
     else if (k === 'r') { state.frame = 0; }
     else if (k === 'h') { hint.classList.toggle('hidden'); clearTimeout(hintTimer); }
-    else if (k >= '1' && k <= '9') { state.autoPalette = false; state.paletteIndex = (parseInt(k, 10) - 1) % PALETTES.length; }
+    else if (k >= '1' && k <= '9') { state.autoPalette = false; state.paletteIndex = (parseInt(k, 10) - 1) % N_PUBLIC; }
   });
   window.addEventListener('resize', () => resize(false));
   document.addEventListener('visibilitychange', () => { state.lastNow = performance.now(); });
@@ -1145,7 +1151,7 @@ function acidMain() {
   if (qs.has('speed')) state.speed = clamp(parseFloat(qs.get('speed')) || 1, 0.05, 8);
   if (qs.has('scale')) state.renderScale = clamp(parseFloat(qs.get('scale')) || 0.75, 0.25, 1);
   state.renderScale = Math.min(state.renderScale, state.maxScale);
-  if (qs.has('palette')) { state.autoPalette = false; state.paletteIndex = clamp((parseInt(qs.get('palette'), 10) || 1) - 1, 0, PALETTES.length - 1); }
+  if (qs.has('palette')) { state.autoPalette = false; state.paletteIndex = clamp((parseInt(qs.get('palette'), 10) || 1) - 1, 0, N_PUBLIC - 1); }
   if (qs.get('hint') === '0' || saverMode) hint.style.display = 'none';
   window.__acid = state;
   window.__acidSettings = S;

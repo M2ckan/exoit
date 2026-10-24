@@ -60,9 +60,11 @@ Keys in the browser: click/F fullscreen, Space pause, 1-9 palette, A auto palett
 
 In a browser the page cannot read `settings.json` from `file://`; edit the `DEFAULTS` block at the top of the script instead, or serve the folder over http (then `settings.json` next to the page is picked up).
 
+One key sequence is not in the hint. The source says where it was forged.
+
 ## Known limitations
 
 * Requires the WebView2 Runtime. Built into Windows 11; on Windows 10 it comes with Edge/Office, or install the Evergreen bootstrapper.
 * If Windows starts the screensaver on the secure (Winlogon) desktop, i.e. the machine is already locked, WebView2 may refuse to start. The host then exits cleanly and logs to `%LOCALAPPDATA%\AcidFlow\AcidFlow.log`; Windows simply shows the lock screen.
 * A screen saver enforced by GPO/Intune under `HKCU\Software\Policies` overrides the per-user registration.
-* The current `.scr` (1.3.1) was built on Windows with `src\build.ps1` (csc.exe from .NET Framework 4.8).
+* The current `.scr` (1.3.2) was built on Windows with `src\build.ps1` (csc.exe from .NET Framework 4.8).

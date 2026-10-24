@@ -45,7 +45,7 @@ await send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 720, dev
 for (let i = 0; i < 60; i++) { if (await evalJs('!!window.__acid')) break; await sleep(500); }
 const errShown = await evalJs("getComputedStyle(document.getElementById('err')).display");
 console.log('err display:', errShown, 'simTime:', await evalJs('window.__acid.simTime'));
-const plan = planText.split(',').map(s => { const [label, rest] = s.split('@'); const [t, js] = rest.split(':'); return { label, t: parseFloat(t), js }; });
+const plan = planText.split(',').map(s => { const [label, rest] = s.split('@'); const sep = rest.indexOf(':'); const t = sep < 0 ? rest : rest.slice(0, sep), js = sep < 0 ? undefined : rest.slice(sep + 1); return { label, t: parseFloat(t), js }; });
 const t0 = Date.now();
 for (const p of plan) {
   while (true) {
