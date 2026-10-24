@@ -1,0 +1,7 @@
+# Binaries allowed to exist in this repository, one path per line, relative to the root,
+# forward slashes. Everything else with a guarded extension (.scr .dll .exe .msi .pfx ...)
+# fails tools/Test-PublicSafety.ps1. Read the scanner for the full list.
+screensaver/AcidFlow/AcidFlow.scr
+screensaver/AcidFlow/src/lib/Microsoft.Web.WebView2.Core.dll
+screensaver/AcidFlow/src/lib/Microsoft.Web.WebView2.WinForms.dll
+screensaver/AcidFlow/src/lib/WebView2Loader.dll

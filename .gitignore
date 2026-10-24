@@ -1,0 +1,16 @@
+# Runtime output of scripts (they write under C:\ProgramData\Scripts, never here)
+Logs/
+Reports/
+Exports/
+State/
+*.log
+*.tmp
+
+# Editors and tooling
+.vscode/
+.claude/
+__pycache__/
+
+# OS
+Thumbs.db
+.DS_Store
